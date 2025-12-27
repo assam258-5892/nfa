@@ -1,0 +1,1474 @@
+========================================================================
+                          Parser 설계 문서
+========================================================================
+
+개요
+------------------------------------------------------------------------
+이 파서는 SQL RPR(Row Pattern Recognition) 표준의 패턴 문법을 파싱하여
+NFA 매칭 엔진에서 사용할 수 있는 실행 가능한 패턴 구조로 변환합니다.
+
+
+========================================================================
+1. 자료구조
+========================================================================
+
+1.1 PatternElement (패턴 요소)
+------------------------------------------------------------------------
+패턴의 각 요소를 나타내는 기본 단위입니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         PatternElement                               │
+├──────────────────────────────────────────────────────────────────────┤
+│ varId: number       // 변수 식별자 또는 특수 마커                    │
+│                     //   - 0 이상: 변수 인덱스 (등장 순서)           │
+│                     //   - -1: #ALT (대안 시작)                      │
+│                     //   - -2: #END (그룹 종료)                      │
+│                     //   - -3: #FIN (패턴 종료)                      │
+│ reluctant: boolean  // 수량자 플래그 (true=최단, false=최장)         │
+│ min: number         // 최소 반복 횟수 (기본값: 1)                    │
+│ max: number         // 최대 반복 횟수 (기본값: 1, *=Infinity)        │
+│ depth: number       // 중첩 깊이 (기본값: 0)                         │
+│ next: number        // 다음 요소 인덱스 (-1 = 종료)                  │
+│ jump: number        // 점프 대상 인덱스                              │
+│                     //   - #END: 그룹 시작으로 루프백                │
+│                     //   - ALT 분기: 다음 대안 시작                  │
+└──────────────────────────────────────────────────────────────────────┘
+
+헬퍼 메서드:
+  - isVar()      : 일반 변수인지 확인
+  - isAltStart() : ALT 시작 마커인지 확인
+  - isGroupEnd() : 그룹 종료 마커인지 확인
+  - isFinish()   : 패턴 종료 마커인지 확인
+  - canSkip()    : 건너뛸 수 있는지 확인 (min === 0)
+
+
+1.2 Pattern (패턴)
+------------------------------------------------------------------------
+컴파일된 패턴 전체를 나타냅니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                            Pattern                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│ elements: PatternElement[]  // 평탄화된 패턴 요소 배열               │
+│ variables: string[]         // 사용된 변수명 목록                    │
+│ maxDepth: number            // 최대 중첩 깊이                        │
+│ firstMatchIsGreedy: boolean // 첫번째 매칭이 Greedy인지 여부         │
+│                             // (Context absorption 조건에 사용)      │
+└──────────────────────────────────────────────────────────────────────┘
+
+firstMatchIsGreedy 계산:
+  - 패턴의 첫번째 요소(VAR 또는 반복 그룹)가 max=∞이고 reluctant=false면 true
+  - 예: "A+ B" -> firstMatchIsGreedy=true (A+는 greedy)
+  - 예: "A+? B" -> firstMatchIsGreedy=false (A+?는 reluctant)
+  - 예: "A B" -> firstMatchIsGreedy=false (A{1,1}는 max≠∞)
+
+
+1.3 Token (토큰)
+------------------------------------------------------------------------
+렉서가 생성하는 토큰 구조입니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                             Token                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│ type: string       // 토큰 유형                                      │
+│                    //   - "VAR": 변수 (name 속성 포함)               │
+│                    //   - "LPAREN": 여는 괄호 (                      │
+│                    //   - "RPAREN": 닫는 괄호 )                      │
+│                    //   - "ALT": 대안 연산자 |                       │
+│                    //   - "QUANT": 수량자 (min, max, reluctant)      │
+├──────────────────────────────────────────────────────────────────────┤
+│ name?: string      // VAR 토큰의 변수명                              │
+│ min?: number       // QUANT 토큰의 최소값                            │
+│ max?: number       // QUANT 토큰의 최대값                            │
+│ reluctant?: boolean // QUANT 토큰의 reluctant 플래그 (기본: false)   │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+1.4 AST Node (추상 구문 트리 노드)
+------------------------------------------------------------------------
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                        AST Node Types                                │
+├──────────────────────────────────────────────────────────────────────┤
+│ VAR 노드:                                                            │
+│   type: "VAR"                                                        │
+│   name: string           // 변수명                                   │
+│   min: number            // 최소 반복                                │
+│   max: number            // 최대 반복                                │
+│   reluctant: boolean     // 최단 매칭                                │
+├──────────────────────────────────────────────────────────────────────┤
+│ SEQ 노드 (시퀀스):                                                   │
+│   type: "SEQ"                                                        │
+│   items: ASTNode[]       // 순차 요소들                              │
+├──────────────────────────────────────────────────────────────────────┤
+│ GROUP 노드 (그룹):                                                   │
+│   type: "GROUP"                                                      │
+│   content: ASTNode       // 그룹 내용                                │
+│   min: number            // 최소 반복                                │
+│   max: number            // 최대 반복                                │
+│   reluctant: boolean     // 최단 매칭                                │
+├──────────────────────────────────────────────────────────────────────┤
+│ ALT 노드 (대안):                                                     │
+│   type: "ALT"                                                        │
+│   alternatives: ASTNode[]  // 대안들                                 │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+========================================================================
+2. 문법 정의
+========================================================================
+
+2.1 지원 문법
+------------------------------------------------------------------------
+
+  문법        설명                          예시
+  --------------------------------------------------------------------
+  변수        영문자로 시작, 숫자/밑줄 허용  A, X1, var_name
+  그룹        괄호로 묶음                    (A B)
+  대안        파이프로 구분                  A | B
+
+  Greedy 수량자 (최장 매칭, 기본값):
+  ?           0 또는 1회                     A?
+  *           0회 이상                       A*
+  +           1회 이상                       A+
+  {n}         정확히 n회                     A{3}
+  {n,}        n회 이상                       A{2,}
+  {n,m}       n~m회                          A{2,5}
+  {,m}        0~m회                          A{,3}
+
+  Reluctant 수량자 (최단 매칭):
+  ??          0 또는 1회 (최단)              A??
+  *?          0회 이상 (최단)                A*?
+  +?          1회 이상 (최단)                A+?
+  {n,m}?      n~m회 (최단)                   A{2,5}?
+
+연산자 우선순위 (높은 순):
+  1. 괄호 ()
+  2. 수량자 ? * + {n,m}
+  3. 연결 (공백으로 구분)
+  4. 대안 |
+
+
+2.2 미지원 문법 (에러 발생)
+------------------------------------------------------------------------
+
+  문법        설명          에러 메시지
+  --------------------------------------------------------------------
+  &           AND 연산자    "AND operator (&) is not supported"
+  ^, $        앵커          "Anchors (^ $) are not supported"
+  {- -}       제외 구문     "Exclusion {- -} is not supported"
+  PERMUTE     순열          "PERMUTE is not supported"
+
+
+2.3 BNF 문법 (참고)
+------------------------------------------------------------------------
+
+<pattern>     ::= <sequence>
+                | <alternation>
+
+<alternation> ::= <sequence> ( '|' <sequence> )+
+
+<sequence>    ::= <term>+
+
+<term>        ::= <atom> <quantifier>?
+
+<atom>        ::= <variable>
+                | '(' <pattern> ')'
+
+<variable>    ::= [A-Za-z] [A-Za-z0-9_]*
+
+<quantifier>  ::= <greedy_quant>
+                | <greedy_quant> '?'             /* reluctant modifier */
+
+<greedy_quant> ::= '?'                           /* {0,1} */
+                | '*'                            /* {0,Inf} */
+                | '+'                            /* {1,Inf} */
+                | '{' <number> '}'               /* {n,n} */
+                | '{' <number> ',}'              /* {n,Inf} */
+                | '{' <number> ',' <number> '}'  /* {n,m} */
+                | '{,' <number> '}'              /* {0,m} */
+
+<number>      ::= [0-9]+
+
+
+========================================================================
+3. 구현 규칙
+========================================================================
+
+3.1 토크나이저 규칙
+------------------------------------------------------------------------
+
+  1. 공백 처리    : 공백과 탭은 무시
+  2. 변수 인식    : /[A-Za-z][A-Za-z0-9_]*/ 패턴
+  3. 수량자 검증  : 수량자는 변수 또는 닫는 괄호 뒤에만 허용
+  4. 괄호 균형    : 여는/닫는 괄호 개수 일치 필수
+  5. 빈 구조 금지 : (), ||, |), (| 등 금지
+
+
+3.2 AST 생성 방식
+------------------------------------------------------------------------
+
+현재 파서(parser.js)는 반복문 기반 수집 방식을 사용하여 평탄한 AST를
+직접 생성합니다:
+
+    const items = [];
+    while (...) {
+        items.push({ type: 'VAR', ... });  // 반복문으로 배열에 추가
+    }
+    return { type: 'SEQ', items };         // 평탄한 배열 반환
+
+참고: PostgreSQL gram.y도 좌재귀 + lappend()로 평탄한 리스트를 직접 생성합니다.
+
+3.3 AST 최적화 규칙
+------------------------------------------------------------------------
+
+optimizeAST는 다음 순서로 최적화를 적용합니다:
+
+1. unwrapGroups (불필요한 그룹 제거):
+   - (A){1,1} -> A
+   - SEQ(A) -> A
+   - ALT(A) -> A
+   - 중첩 SEQ/ALT 평탄화 (SEQ 내 SEQ, ALT 내 ALT 끌어올림)
+
+2. removeDuplicates (중복 대안 제거):
+   - A | A -> A
+   - astEqual()로 구조적 동등성 비교
+
+3. optimizeQuantifiers (수량자 최적화):
+   - ((A{m,n}){p,q}) -> A{m*p, n*q} (하나가 고정값일 때)
+   - A A A -> A{3,3}
+
+
+최적화 예제
+------------------------------------------------------------------------
+
+예제 1: 불필요한 그룹 제거 (unwrapGroups)
+
+  입력: "((A))"
+
+  최적화 전 AST:                    최적화 후 AST:
+    GROUP {1,1}                       VAR:A {1,1}
+     +-- GROUP {1,1}
+          +-- VAR:A {1,1}
+
+
+예제 2: 중첩 SEQ 평탄화 (unwrapGroups)
+
+  입력: "(A B) C"
+
+  최적화 전 AST:                    최적화 후 AST:
+    SEQ                               SEQ
+     +-- GROUP {1,1}                   +-- VAR:A {1,1}
+     |    +-- SEQ                      +-- VAR:B {1,1}
+     |         +-- VAR:A {1,1}         +-- VAR:C {1,1}
+     |         +-- VAR:B {1,1}
+     +-- VAR:C {1,1}
+
+
+예제 3: 중복 대안 제거 (removeDuplicates)
+
+  입력: "A | B | A"
+
+  최적화 전 AST:                    최적화 후 AST:
+    ALT                               ALT
+     +-- VAR:A {1,1}                   +-- VAR:A {1,1}
+     +-- VAR:B {1,1}                   +-- VAR:B {1,1}
+     +-- VAR:A {1,1}  <- 중복
+
+
+예제 4: 연속 변수 병합 (optimizeQuantifiers)
+
+  입력: "A A A B"
+
+  최적화 전 AST:                    최적화 후 AST:
+    SEQ                               SEQ
+     +-- VAR:A {1,1}                   +-- VAR:A {3,3}
+     +-- VAR:A {1,1}                   +-- VAR:B {1,1}
+     +-- VAR:A {1,1}
+     +-- VAR:B {1,1}
+
+
+예제 5: 중첩 수량자 병합 (optimizeQuantifiers)
+
+  입력: "(A{2}){3}"
+
+  최적화 전 AST:                    최적화 후 AST:
+    GROUP {3,3}                       VAR:A {6,6}
+     +-- VAR:A {2,2}
+
+  계산: min = 2*3 = 6, max = 2*3 = 6
+
+
+예제 6: 복합 최적화
+
+  입력: "((A | A) B B)"
+
+  최적화 전 AST:                    최적화 후 AST:
+    GROUP {1,1}                       SEQ
+     +-- SEQ                           +-- VAR:A {1,1}
+          +-- GROUP {1,1}              +-- VAR:B {2,2}
+          |    +-- ALT
+          |         +-- VAR:A
+          |         +-- VAR:A  <- 중복
+          +-- VAR:B {1,1}
+          +-- VAR:B {1,1}
+
+  적용된 최적화:
+    1. unwrapGroups: 외부 GROUP {1,1} 제거
+    2. unwrapGroups: 내부 GROUP {1,1} 제거
+    3. removeDuplicates: ALT(A,A) -> A
+    4. optimizeQuantifiers: B B -> B{2,2}
+
+
+3.4 평탄화 규칙
+------------------------------------------------------------------------
+
+next 포인터:
+  - 순차 요소: 다음 요소 인덱스
+  - 마지막 요소: #FIN 인덱스
+  - #FIN: -1 (종료)
+
+jump 포인터:
+  - #END: 그룹 시작 인덱스 (루프백)
+  - ALT 분기의 첫 요소: 다음 대안 시작 인덱스
+  - 마지막 대안: -1
+
+depth 계산:
+  - 최상위: 0
+  - 그룹/ALT 내부: 부모 depth + 1
+  - #END: 부모 depth (그룹 반복 카운팅용)
+
+
+========================================================================
+4. 의사코드
+========================================================================
+
+4.1 메인 파싱 함수
+------------------------------------------------------------------------
+
+FUNCTION parsePattern(patternStr, options):
+    # 1단계: 토큰화
+    tokens = tokenize(patternStr)
+
+    # 2단계: AST 생성
+    variables = new Set()
+    pos = {value: 0}
+    ast = parseSequence(tokens, pos, variables)
+
+    # 3단계: 최적화 (선택적)
+    IF options.optimize:
+        ast = optimizeAST(ast)
+
+    # 4단계: 컴파일
+    pattern = compileAST(ast)
+
+    RETURN pattern
+END FUNCTION
+
+
+4.2 토큰화
+------------------------------------------------------------------------
+
+FUNCTION tokenize(str):
+    tokens = []
+    i = 0
+    lastToken = null
+
+    WHILE i < str.length:
+        c = str[i]
+
+        # 공백 건너뛰기
+        IF c == ' ' OR c == '\t':
+            i++
+            CONTINUE
+
+        # 여는 괄호
+        # ┌────────────────────────────────────────────────────────┐
+        # │ 예: "(A B)" 처리 시 '(' -> LPAREN 토큰 생성            │
+        # │     (6.4 그룹과 반복 예제 참조)                        │
+        # └────────────────────────────────────────────────────────┘
+        IF c == '(':
+            tokens.push({type: 'LPAREN'})
+            lastToken = 'LPAREN'
+            i++
+
+        # 닫는 괄호
+        ELSE IF c == ')':
+            IF lastToken == 'LPAREN':
+                THROW "Empty group () is not allowed"
+            IF lastToken == 'ALT':
+                THROW "Empty alternation before ) is not allowed"
+            tokens.push({type: 'RPAREN'})
+            lastToken = 'RPAREN'
+            i++
+
+        # 대안 연산자
+        # ┌────────────────────────────────────────────────────────┐
+        # │ 예: "A | B | C" -> [VAR:A, ALT, VAR:B, ALT, VAR:C]     │
+        # │     (6.3 대안 예제 참조)                               │
+        # └────────────────────────────────────────────────────────┘
+        ELSE IF c == '|':
+            IF lastToken == null OR lastToken == 'LPAREN':
+                THROW "Invalid | position"
+            IF lastToken == 'ALT':
+                THROW "Consecutive || not allowed"
+            tokens.push({type: 'ALT'})
+            lastToken = 'ALT'
+            i++
+
+        # 수량자
+        # ┌────────────────────────────────────────────────────────┐
+        # │ 예: "A+" -> QUANT{1,Inf}, "B*" -> QUANT{0,Inf}         │
+        # │     "C?" -> QUANT{0,1}                                 │
+        # │     "(A B){2,3}" -> QUANT{2,3} (6.2, 6.4 예제 참조)    │
+        # │     "A+?" -> QUANT{1,Inf,reluctant:true} (최단 매칭)   │
+        # └────────────────────────────────────────────────────────┘
+        ELSE IF c IN ['?', '*', '+', '{']:
+            IF lastToken NOT IN ['VAR', 'RPAREN']:
+                THROW "Quantifier must follow variable or group"
+
+            IF c == '?':
+                (min, max) = (0, 1)
+                i++
+            ELSE IF c == '*':
+                (min, max) = (0, Infinity)
+                i++
+            ELSE IF c == '+':
+                (min, max) = (1, Infinity)
+                i++
+            ELSE IF c == '{':
+                (min, max, endPos) = parseRangeQuantifier(str, i)
+                i = endPos
+
+            # reluctant modifier 확인 (수량자 뒤의 '?')
+            reluctant = false
+            IF i < str.length AND str[i] == '?':
+                reluctant = true
+                i++
+
+            tokens.push({type: 'QUANT', min, max, reluctant})
+            lastToken = 'QUANT'
+
+        # 변수
+        # ┌────────────────────────────────────────────────────────┐
+        # │ 예: "A B C" -> [VAR:A, VAR:B, VAR:C]                   │
+        # │     변수명은 영문자로 시작, 숫자/밑줄 허용             │
+        # │     (6.1 예제 참조)                                    │
+        # └────────────────────────────────────────────────────────┘
+        ELSE IF c matches /[A-Za-z]/:
+            varName = extractIdentifier(str, i)
+            tokens.push({type: 'VAR', name: varName})
+            lastToken = 'VAR'
+            i += varName.length
+
+        ELSE:
+            THROW "Invalid character"
+
+    # 최종 검증
+    validateParenthesesBalance(tokens)
+    IF lastToken == 'ALT':
+        THROW "Pattern cannot end with |"
+
+    RETURN tokens
+END FUNCTION
+
+
+4.3 AST 파싱 (재귀 하강)
+------------------------------------------------------------------------
+
+FUNCTION extractQuantifier(tokens, pos):
+    # ┌────────────────────────────────────────────────────────┐
+    # │ 현재 위치의 토큰이 QUANT면 min/max/reluctant 추출       │
+    # │ QUANT가 아니면 기본값 {1,1,greedy} 반환                 │
+    # └────────────────────────────────────────────────────────┘
+    IF tokens[pos.value]?.type == 'QUANT':
+        {min, max, reluctant} = tokens[pos.value]
+        pos.value++
+        RETURN {min, max, reluctant}
+    RETURN {min: 1, max: 1, reluctant: false}
+END FUNCTION
+
+FUNCTION parseItem(tokens, pos, variables):
+    # ┌────────────────────────────────────────────────────────┐
+    # │ 단일 항목(GROUP 또는 VAR) 파싱                          │
+    # │ parseSequence와 handleAlternation에서 공통으로 사용     │
+    # └────────────────────────────────────────────────────────┘
+    token = tokens[pos.value]
+
+    # 여는 괄호 = 그룹 시작
+    # ┌────────────────────────────────────────────────────────┐
+    # │ 예: "(A B){2,3}" -> 재귀 호출로 내부 SEQ[A,B] 파싱     │
+    # │     후 GROUP{2,3} 노드 생성                            │
+    # │     (6.4 그룹과 반복 예제 참조)                        │
+    # └────────────────────────────────────────────────────────┘
+    IF token.type == 'LPAREN':
+        pos.value++
+        groupContent = parseSequence(tokens, pos, variables)
+        IF tokens[pos.value]?.type == 'RPAREN':
+            pos.value++
+        {min, max, reluctant} = extractQuantifier(tokens, pos)
+        RETURN {type: 'GROUP', content: groupContent, min, max, reluctant}
+
+    # 변수
+    # ┌────────────────────────────────────────────────────────┐
+    # │ 예: "A+ B*" -> VAR:A{1,Inf}, VAR:B{0,Inf} 노드 생성    │
+    # │     "A+? B*?" -> VAR:A{1,Inf,reluctant}, ...           │
+    # │     (6.2 수량자 사용 예제 참조)                        │
+    # └────────────────────────────────────────────────────────┘
+    IF token.type == 'VAR':
+        variables.add(token.name)
+        pos.value++
+        {min, max, reluctant} = extractQuantifier(tokens, pos)
+        RETURN {type: 'VAR', name: token.name, min, max, reluctant}
+
+    THROW Error("Unexpected token type")
+END FUNCTION
+
+FUNCTION parseSequence(tokens, pos, variables):
+    items = []
+
+    WHILE pos.value < tokens.length:
+        token = tokens[pos.value]
+
+        # 닫는 괄호면 시퀀스 종료
+        IF token.type == 'RPAREN':
+            BREAK
+
+        # 대안 연산자 발견
+        # ┌────────────────────────────────────────────────────────┐
+        # │ 예: "A | B | C" 파싱 시 첫 번째 '|' 발견 ->            │
+        # │     handleAlternation 호출하여 ALT 노드 생성           │
+        # │     (6.3 대안 예제 참조)                               │
+        # └────────────────────────────────────────────────────────┘
+        IF token.type == 'ALT':
+            RETURN handleAlternation(tokens, pos, items, variables)
+
+        items.push(parseItem(tokens, pos, variables))
+
+    RETURN {type: 'SEQ', items}
+END FUNCTION
+
+FUNCTION handleAlternation(tokens, pos, currentItems, variables):
+    # ┌────────────────────────────────────────────────────────┐
+    # │ 예: "A | B | C" -> ALT[SEQ[A], SEQ[B], SEQ[C]] 생성     │
+    # │     각 대안을 SEQ로 래핑 (6.3 대안 예제 참조)           │
+    # └────────────────────────────────────────────────────────┘
+    alternatives = [{type: 'SEQ', items: currentItems}]
+    pos.value++  # skip '|'
+
+    WHILE pos.value < tokens.length:
+        altItems = []
+
+        WHILE pos.value < tokens.length:
+            t = tokens[pos.value]
+            IF t.type IN ['RPAREN', 'ALT']:
+                BREAK
+            altItems.push(parseItem(tokens, pos, variables))
+
+        alternatives.push({type: 'SEQ', items: altItems})
+
+        IF tokens[pos.value]?.type == 'ALT':
+            pos.value++
+        ELSE:
+            BREAK
+
+    RETURN {type: 'ALT', alternatives}
+END FUNCTION
+
+
+4.4 AST 최적화
+------------------------------------------------------------------------
+
+FUNCTION optimizeAST(node):
+    node = unwrapGroups(node)
+    node = removeDuplicates(node)
+    node = optimizeQuantifiers(node)
+    RETURN node
+END FUNCTION
+
+FUNCTION unwrapGroups(node):
+    IF node.type == 'SEQ':
+        # 자식 먼저 최적화
+        node.items = node.items.map(unwrapGroups)
+
+        # {1,1} 그룹 언래핑
+        # ┌────────────────────────────────────────────────────────┐
+        # │ 예: "(A B) C" -> SEQ[GROUP{1,1}->SEQ[A,B], C]          │
+        # │     -> SEQ[A, B, C]  (3.3 최적화 예제 2 참조)          │
+        # └────────────────────────────────────────────────────────┘
+        newItems = []
+        FOR item IN node.items:
+            IF item.type == 'GROUP' AND item.min == 1 AND item.max == 1:
+                IF item.content.type == 'SEQ':
+                    newItems.extend(item.content.items)
+                ELSE:
+                    newItems.push(item.content)
+            ELSE IF item.type == 'SEQ':
+                newItems.extend(item.items)
+            ELSE:
+                newItems.push(item)
+        node.items = newItems
+
+        # 단일 항목 SEQ 언래핑
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: SEQ[A] -> A                                          │
+        # └──────────────────────────────────────────────────────────┘
+        IF node.items.length == 1:
+            RETURN node.items[0]
+
+    ELSE IF node.type == 'GROUP':
+        node.content = unwrapGroups(node.content)
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: "((A))" -> GROUP{1,1}->GROUP{1,1}->A -> A            │
+        # │     (3.3 최적화 예제 1 참조)                             │
+        # └──────────────────────────────────────────────────────────┘
+        IF node.min == 1 AND node.max == 1:
+            RETURN node.content
+
+    ELSE IF node.type == 'ALT':
+        node.alternatives = node.alternatives.map(unwrapGroups)
+
+        # 중첩 ALT 평탄화
+        newAlts = []
+        FOR alt IN node.alternatives:
+            IF alt.type == 'ALT':
+                newAlts.extend(alt.alternatives)  # 끌어올림
+            ELSE:
+                newAlts.push(alt)
+        node.alternatives = newAlts
+
+        # 단일 항목 ALT 언래핑
+        IF node.alternatives.length == 1:
+            RETURN node.alternatives[0]
+
+    RETURN node
+END FUNCTION
+
+FUNCTION removeDuplicates(node):
+    IF node.type == 'SEQ':
+        node.items = node.items.map(removeDuplicates)
+        RETURN node
+
+    ELSE IF node.type == 'GROUP':
+        node.content = removeDuplicates(node.content)
+        RETURN node
+
+    ELSE IF node.type == 'ALT':
+        node.alternatives = node.alternatives.map(removeDuplicates)
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: "A | A | B" -> ALT[A,A,B] -> ALT[A,B]                │
+        # │     astEqual로 구조적 동등성 비교 (3.3 최적화 예제 5)    │
+        # └──────────────────────────────────────────────────────────┘
+        unique = []
+        FOR alt IN node.alternatives:
+            isDup = unique.some(u => astEqual(u, alt))
+            IF NOT isDup:
+                unique.push(alt)
+        node.alternatives = unique
+
+        # 단일 항목이면 언래핑
+        IF node.alternatives.length == 1:
+            RETURN node.alternatives[0]
+        RETURN node
+
+    RETURN node
+END FUNCTION
+
+FUNCTION optimizeQuantifiers(node):
+    IF node.type == 'SEQ':
+        # 연속된 동일 변수 병합
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: "A A A B" -> SEQ[A,A,A,B] -> SEQ[A{3,3}, B]          │
+        # │     (3.3 최적화 예제 4 참조)                             │
+        # └──────────────────────────────────────────────────────────┘
+        ...
+
+    ELSE IF node.type == 'GROUP':
+        # 중첩 수량자 병합 (안전할 때만)
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: "(A{2}){3}" -> GROUP{3,3}->A{2,2} -> A{6,6}          │
+        # │     min=2*3=6, max=2*3=6 (3.3 최적화 예제 5 참조)        │
+        # └──────────────────────────────────────────────────────────┘
+        IF innerNode AND (node.min == node.max OR ...):
+            newMin = innerNode.min * node.min
+            newMax = innerNode.max * node.max
+            RETURN merged node
+
+    RETURN node
+END FUNCTION
+
+
+4.5 AST -> Pattern 컴파일
+------------------------------------------------------------------------
+
+FUNCTION compileAST(ast):
+    pattern = new Pattern()
+
+    # AST 평탄화
+    flattenAST(ast, pattern, depth=0)
+
+    # next 포인터 설정
+    finIdx = pattern.elements.length
+    FOR i = 0 TO pattern.elements.length - 1:
+        IF pattern.elements[i].next == -1:
+            pattern.elements[i].next = IF i < length-1 THEN i+1 ELSE finIdx
+
+    # #FIN 요소 추가
+    finElem = new PatternElement('#FIN')
+    finElem.next = -1
+    pattern.elements.push(finElem)
+
+    # 변수 인덱스 할당
+    # - 일반 변수: 등장 순서 (0, 1, 2, ...)
+    # - #ALT: -1, #END: -2, #FIN: -3
+    varIndexMap = new Map()
+    FOR elem IN pattern.elements:
+        IF elem.isVar() AND NOT varIndexMap.has(elem.varName):
+            varIndexMap.set(elem.varName, varIndexMap.size)
+    FOR elem IN pattern.elements:
+        IF elem.isVar():
+            elem.varIndex = varIndexMap.get(elem.varName)
+        ELSE IF elem.isAltStart():
+            elem.varIndex = -1
+        ELSE IF elem.isGroupEnd():
+            elem.varIndex = -2
+        ELSE IF elem.isFinish():
+            elem.varIndex = -3
+
+    # 메타데이터 설정
+    pattern.maxDepth = max(all elements' depth)
+    pattern.variables = Array.from(varIndexMap.keys())
+
+    # firstMatchIsGreedy 계산
+    # 패턴의 첫번째 매칭이 Greedy(max=∞, reluctant=false)인지 확인
+    pattern.firstMatchIsGreedy = computeFirstMatchIsGreedy(ast)
+
+    RETURN pattern
+END FUNCTION
+
+FUNCTION computeFirstMatchIsGreedy(ast):
+    # AST의 첫번째 매칭 요소 찾기
+    node = ast
+
+    # SEQ인 경우 첫번째 항목으로
+    WHILE node.type == 'SEQ' AND node.items.length > 0:
+        node = node.items[0]
+
+    # GROUP인 경우 (첫 요소가 그룹이면)
+    IF node.type == 'GROUP':
+        RETURN node.max == Infinity AND NOT node.reluctant
+
+    # VAR인 경우
+    IF node.type == 'VAR':
+        RETURN node.max == Infinity AND NOT node.reluctant
+
+    # ALT인 경우: 모든 대안이 greedy여야 함 (보수적 판단)
+    IF node.type == 'ALT':
+        RETURN false  # ALT는 보수적으로 false
+
+    RETURN false
+END FUNCTION
+
+FUNCTION flattenAST(node, pattern, depth):
+    IF node.type == 'SEQ':
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: SEQ[A,B,C] -> 각 요소를 순차적으로 평탄화            │
+        # │     (6.1 간단한 시퀀스 예제 참조)                        │
+        # └──────────────────────────────────────────────────────────┘
+        FOR item IN node.items:
+            flattenAST(item, pattern, depth)
+
+    ELSE IF node.type == 'VAR':
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: VAR:A{1,Inf} -> PatternElement(A, min:1, max:Inf)    │
+        # │     VAR:A{1,Inf,reluctant} -> reluctant:true             │
+        # │     (6.2 수량자 사용 예제 참조)                          │
+        # └──────────────────────────────────────────────────────────┘
+        elem = new PatternElement(node.name)
+        elem.min = node.min
+        elem.max = node.max
+        elem.reluctant = node.reluctant
+        elem.depth = depth
+        pattern.elements.push(elem)
+
+    ELSE IF node.type == 'GROUP':
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: GROUP{2,3}->SEQ[A,B] -> [A, B, #END{2,3}]            │
+        # │     GROUP{2,3,reluctant} -> #END.reluctant=true          │
+        # │     #END.jump = 그룹 시작 인덱스 (루프백)                │
+        # │     (6.4 그룹과 반복 예제 참조)                          │
+        # └──────────────────────────────────────────────────────────┘
+        groupStartIdx = pattern.elements.length
+
+        flattenAST(node.content, pattern, depth + 1)
+
+        IF node.min != 1 OR node.max != 1:
+            groupEnd = new PatternElement('#END')
+            groupEnd.depth = depth
+            groupEnd.min = node.min
+            groupEnd.max = node.max
+            groupEnd.reluctant = node.reluctant
+            groupEnd.jump = groupStartIdx  # 루프백
+            pattern.elements.push(groupEnd)
+
+    ELSE IF node.type == 'ALT':
+        # ┌──────────────────────────────────────────────────────────┐
+        # │ 예: ALT[A,B,C] -> [#ALT, A, B, C]                        │
+        # │     #ALT.next = 첫 분기, 각 분기.jump = 다음 분기        │
+        # │     (6.3 대안, 6.5 복합 패턴 예제 참조)                  │
+        # └──────────────────────────────────────────────────────────┘
+        altStart = new PatternElement('#ALT')
+        altStart.depth = depth
+        altStartIdx = pattern.elements.length
+        pattern.elements.push(altStart)
+
+        branchStarts = []
+
+        FOR alt IN node.alternatives:
+            branchStarts.push(pattern.elements.length)
+            flattenAST(alt, pattern, depth + 1)
+
+        # ALT_START.next = 첫 번째 분기
+        altStart.next = branchStarts[0]
+
+        # 각 분기의 첫 요소에 jump 설정 (다음 분기로)
+        FOR i = 0 TO branchStarts.length - 2:
+            pattern.elements[branchStarts[i]].jump = branchStarts[i + 1]
+END FUNCTION
+
+
+========================================================================
+5. 처리 흐름도
+========================================================================
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                       입력 패턴 문자열                               │
+│                    예: "(A | B)+ C?"                                 │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                      1. TOKENIZE (토큰화)                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  입력: "(A | B)+ C?"                                                 │
+│  출력: [LPAREN, VAR:A, ALT, VAR:B, RPAREN, QUANT:+,                  │
+│         VAR:C, QUANT:?]                                              │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    2. PARSE (AST 생성)                               │
+├──────────────────────────────────────────────────────────────────────┤
+│  재귀 하강 파싱으로 트리 구조 생성                                   │
+│                                                                      │
+│  SEQ                                                                 │
+│   +-- GROUP {min:1, max:Inf}                                         │
+│   │    +-- ALT                                                       │
+│   │         +-- VAR:A                                                │
+│   │         +-- VAR:B                                                │
+│   +-- VAR:C {min:0, max:1}                                           │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    3. OPTIMIZE (최적화)                              │
+├──────────────────────────────────────────────────────────────────────┤
+│  - 불필요한 그룹 제거                                                │
+│  - 중복 대안 제거                                                    │
+│  - 수량자 병합                                                       │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                   4. COMPILE (평탄화)                                │
+├──────────────────────────────────────────────────────────────────────┤
+│  AST를 선형 PatternElement 배열로 변환                               │
+│                                                                      │
+│  [0] #ALT   next:1, jump:-1, depth:1                                 │
+│  [1] A      next:3, jump:2,  depth:2                                 │
+│  [2] B      next:3, jump:-1, depth:2                                 │
+│  [3] #END   next:4, jump:0,  depth:0, min:1, max:Inf                 │
+│  [4] C      next:5, jump:-1, depth:0, min:0, max:1                   │
+│  [5] #FIN   next:-1                                                  │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                       Pattern 객체                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│  elements: [위의 PatternElement 배열]                                │
+│  variables: ["A", "B", "C"]                                          │
+│  maxDepth: 2                                                         │
+│  firstMatchIsGreedy: true                                            │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+========================================================================
+6. 예제
+========================================================================
+
+6.1 간단한 시퀀스
+------------------------------------------------------------------------
+
+입력: "A B C"
+
+토큰: [VAR:A, VAR:B, VAR:C]
+
+AST:
+  SEQ
+   +-- VAR:A {1,1}
+   +-- VAR:B {1,1}
+   +-- VAR:C {1,1}
+
+Pattern:
+  [0] A     next:1
+  [1] B     next:2
+  [2] C     next:3
+  [3] #FIN  next:-1
+
+
+6.2 수량자 사용
+------------------------------------------------------------------------
+
+입력: "A+ B* C?"
+
+토큰: [VAR:A, QUANT:+, VAR:B, QUANT:*, VAR:C, QUANT:?]
+
+AST:
+  SEQ
+   +-- VAR:A {1,Inf}
+   +-- VAR:B {0,Inf}
+   +-- VAR:C {0,1}
+
+Pattern:
+  [0] A     next:1, min:1, max:Inf
+  [1] B     next:2, min:0, max:Inf
+  [2] C     next:3, min:0, max:1
+  [3] #FIN  next:-1
+
+
+6.3 대안 (Alternation)
+------------------------------------------------------------------------
+
+입력: "A | B | C"
+
+토큰: [VAR:A, ALT, VAR:B, ALT, VAR:C]
+
+AST:
+  ALT
+   +-- VAR:A {1,1}
+   +-- VAR:B {1,1}
+   +-- VAR:C {1,1}
+
+Pattern:
+  [0] #ALT  next:1
+  [1] A     next:4, jump:2
+  [2] B     next:4, jump:3
+  [3] C     next:4, jump:-1
+  [4] #FIN  next:-1
+
+
+6.4 그룹과 반복
+------------------------------------------------------------------------
+
+입력: "(A B){2,3}"
+
+토큰: [LPAREN, VAR:A, VAR:B, RPAREN, QUANT:{2,3}]
+
+AST:
+  GROUP {2,3}
+   +-- SEQ
+        +-- VAR:A {1,1}
+        +-- VAR:B {1,1}
+
+Pattern:
+  [0] A     next:1, depth:1
+  [1] B     next:2, depth:1
+  [2] #END  next:3, jump:0, min:2, max:3, depth:0
+  [3] #FIN  next:-1
+
+
+6.5 복합 패턴
+------------------------------------------------------------------------
+
+입력: "(A | B)+ C?"
+
+토큰: [LPAREN, VAR:A, ALT, VAR:B, RPAREN, QUANT:+, VAR:C, QUANT:?]
+
+AST:
+  SEQ
+   +-- GROUP {1,Inf}
+   |    +-- ALT
+   |         +-- VAR:A {1,1}
+   |         +-- VAR:B {1,1}
+   +-- VAR:C {0,1}
+
+Pattern:
+  [0] #ALT  next:1, jump:-1, depth:1
+  [1] A     next:3, jump:2, depth:2
+  [2] B     next:3, jump:-1, depth:2
+  [3] #END  next:4, jump:0, min:1, max:Inf, reluctant:false, depth:0
+  [4] C     next:5, jump:-1, min:0, max:1, depth:0
+  [5] #FIN  next:-1
+
+firstMatchIsGreedy: true (첫번째 그룹이 max=Inf AND reluctant=false)
+
+
+6.6 Reluctant 수량자
+------------------------------------------------------------------------
+
+입력: "A+? B"
+
+토큰: [VAR:A, QUANT:{1,Inf,reluctant:true}, VAR:B]
+
+AST:
+  SEQ
+   +-- VAR:A {1,Inf,reluctant:true}
+   +-- VAR:B {1,1}
+
+Pattern:
+  [0] A     next:1, min:1, max:Inf, reluctant:true
+  [1] B     next:2
+  [2] #FIN  next:-1
+
+firstMatchIsGreedy: false (첫번째 요소가 reluctant)
+
+
+입력: "(A B)+? C"
+
+토큰: [LPAREN, VAR:A, VAR:B, RPAREN, QUANT:{1,Inf,reluctant:true}, VAR:C]
+
+AST:
+  SEQ
+   +-- GROUP {1,Inf,reluctant:true}
+   |    +-- SEQ
+   |         +-- VAR:A {1,1}
+   |         +-- VAR:B {1,1}
+   +-- VAR:C {1,1}
+
+Pattern:
+  [0] A     next:1, depth:1
+  [1] B     next:2, depth:1
+  [2] #END  next:3, jump:0, min:1, max:Inf, reluctant:true, depth:0
+  [3] C     next:4
+  [4] #FIN  next:-1
+
+firstMatchIsGreedy: false (첫번째 그룹이 reluctant)
+
+
+========================================================================
+7. 에러 처리
+========================================================================
+
+  에러 상황              에러 메시지
+  --------------------------------------------------------------------
+  빈 그룹 ()             "Empty group () is not allowed"
+  빈 대안 A||B           "Empty alternation (consecutive ||) is not
+                          allowed"
+  시작 |                 "Pattern cannot start with |"
+  종료 |                 "Pattern cannot end with |"
+  괄호 불균형            "Unclosed parenthesis" /
+                         "Unmatched closing parenthesis"
+  잘못된 수량자 위치     "Quantifier must follow a variable or group"
+  잘못된 범위 {5,2}      "min cannot exceed max"
+  미지원 문법            각 문법별 상세 메시지
+
+
+========================================================================
+8. 엣지 케이스
+========================================================================
+
+8.1 유효한 엣지 케이스
+------------------------------------------------------------------------
+
+  패턴           설명                결과
+  ----------------------------------------------------------
+  A              단일 변수           정상 파싱
+  A{1}           명시적 1회          A{1,1}
+  A{0,}          0회 이상            A*와 동일
+  (A)            불필요한 그룹       최적화 후 A
+  A | A          중복 대안           최적화 후 A
+  ((((A))))      깊은 중첩           최적화 후 A
+  A{1,1}         명시적 {1,1}        기본값과 동일
+
+
+8.2 경계값 테스트
+------------------------------------------------------------------------
+
+# 최대 반복 횟수
+A{0,999999}      -> 정상 (max=999999)
+A{999999}        -> 정상 (min=max=999999)
+
+# 깊은 중첩
+((((((A))))))    -> depth=6, 최적화 후 depth=0
+
+# 긴 대안
+A|B|C|D|E|F|G|H  -> 8개 분기
+
+
+8.3 의미적으로 동등한 패턴
+------------------------------------------------------------------------
+
+  패턴 A         패턴 B         동등성
+  ----------------------------------------------
+  A?             A{0,1}         O
+  A*             A{0,}          O
+  A+             A{1,}          O
+  A A            A{2}           O (최적화 후)
+  (A)            A              O (최적화 후)
+  A | A          A              O (최적화 후)
+  (A | B)+       (B | A)+       X (순서 다름)
+
+
+8.4 Greedy vs Reluctant 비교
+------------------------------------------------------------------------
+
+Greedy와 Reluctant는 구조적으로 동등하지 않습니다.
+동일한 입력에 대해 다른 매칭 동작을 보입니다.
+
+  Greedy          Reluctant       동등성   설명
+  -----------------------------------------------------------------
+  A+              A+?             X        최장 vs 최단 매칭
+  A*              A*?             X        최장 vs 최단 매칭
+  A?              A??             X        욕심쟁이 vs 게으른 선택
+  A{2,5}          A{2,5}?         X        최대 vs 최소 반복 시도
+  (A B)+          (A B)+?         X        그룹 반복 동작 다름
+
+firstMatchIsGreedy 플래그 영향:
+  - A+ B      -> firstMatchIsGreedy=true  (Context absorption 가능)
+  - A+? B     -> firstMatchIsGreedy=false (Context absorption 불가)
+  - A B       -> firstMatchIsGreedy=false (max≠∞)
+  - (A B)+ C  -> firstMatchIsGreedy=true
+  - (A B)+? C -> firstMatchIsGreedy=false
+
+
+========================================================================
+9. 복잡도 분석
+========================================================================
+
+9.1 시간 복잡도
+------------------------------------------------------------------------
+
+  단계           복잡도     설명
+  -------------------------------------------------
+  토큰화         O(n)       n = 패턴 문자열 길이
+  AST 파싱       O(t)       t = 토큰 개수
+  AST 최적화     O(a)       a = AST 노드 개수
+  평탄화         O(a)       a = AST 노드 개수
+  전체           O(n)       각 단계가 선형
+
+
+9.2 공간 복잡도
+------------------------------------------------------------------------
+
+  구조           복잡도     설명
+  -------------------------------------------------
+  토큰 배열      O(n)       최대 n개 토큰
+  AST            O(n)       최대 n개 노드
+  Pattern        O(n)       최대 n개 요소
+  전체           O(n)       입력 크기에 비례
+
+
+9.3 최악의 경우
+------------------------------------------------------------------------
+
+# 최대 토큰 생성
+A B C D E F G H I J    -> n개 변수 = n개 토큰
+
+# 최대 AST 깊이
+((((((A))))))          -> 깊이 = 괄호 쌍 개수
+
+# 최대 Pattern 크기
+(A|B|C|D|E){99}        -> 대안 수 x 반복 관련 요소
+
+
+========================================================================
+10. API 명세
+========================================================================
+
+10.1 parsePattern(patternStr, options?)
+------------------------------------------------------------------------
+
+메인 파싱 함수. 패턴 문자열을 Pattern 객체로 변환.
+
+  /**
+   * @param {string} patternStr - 패턴 문자열 (예: "A+ B* C?")
+   * @param {Object} options - 옵션
+   * @param {boolean} options.optimize - AST 최적화 여부 (기본값: true)
+   * @returns {Pattern} 컴파일된 패턴 객체
+   * @throws {Error} 문법 오류 시
+   */
+  function parsePattern(patternStr, options = { optimize: true })
+
+사용 예:
+  const pattern = parsePattern("(A | B)+ C?");
+  // pattern.elements: PatternElement[]
+  // pattern.variables: ["A", "B", "C"]
+  // pattern.maxDepth: 2
+
+
+10.2 tokenize(str)
+------------------------------------------------------------------------
+
+문자열을 토큰 배열로 변환.
+
+  /**
+   * @param {string} str - 패턴 문자열
+   * @returns {Token[]} 토큰 배열
+   * @throws {Error} 문법 오류 시
+   */
+  function tokenize(str)
+
+
+10.3 optimizeAST(node)
+------------------------------------------------------------------------
+
+AST 최적화 수행.
+
+  /**
+   * @param {ASTNode} node - AST 루트 노드
+   * @returns {ASTNode} 최적화된 AST
+   */
+  function optimizeAST(node)
+
+
+10.4 astEqual(a, b)
+------------------------------------------------------------------------
+
+AST 노드 구조적 동등성 비교 (중복 대안 제거용).
+
+  /**
+   * @param {ASTNode} a - 비교할 AST 노드
+   * @param {ASTNode} b - 비교할 AST 노드
+   * @returns {boolean} 동등하면 true
+   */
+  function astEqual(a, b)
+
+
+10.5 astToString(node)
+------------------------------------------------------------------------
+
+AST를 다시 패턴 문자열로 변환 (디버깅/테스트용).
+
+  /**
+   * @param {ASTNode} node - AST 노드
+   * @param {string} parentType - 부모 노드 타입 (내부용)
+   * @returns {string} 패턴 문자열
+   */
+  function astToString(node, parentType = null)
+
+
+========================================================================
+11. NFA 매칭 엔진 연동
+========================================================================
+
+11.1 Pattern -> NFA 상태 매핑
+------------------------------------------------------------------------
+
+Pattern의 각 요소는 NFA 상태(State)에 대응됩니다:
+
+  PatternElement     NFA 상태 역할
+  ----------------------------------------------------------
+  VAR                입력 심볼을 소비하는 상태
+  #ALT               epsilon-전이로 분기하는 상태
+  #END               반복 카운터를 확인하는 상태
+  #FIN               수락 상태 (accepting state)
+
+
+11.2 포인터 활용
+------------------------------------------------------------------------
+
+next    -> 매칭 성공 시 다음 상태
+jump    -> 대안 시도 또는 루프백
+min/max -> 반복 횟수 제한
+depth   -> 중첩 레벨별 카운터 관리
+
+
+11.3 매칭 시뮬레이션 예시
+------------------------------------------------------------------------
+
+패턴 (A | B)+ C로 입력 [A, B, C] 매칭:
+
+상태 [0] #ALT  -> epsilon-전이, 분기 선택
+상태 [1] A     -> 입력 'A' 매칭 OK
+상태 [3] #END  -> 반복 카운터=1, min=1 충족, 계속 또는 탈출
+상태 [0] #ALT  -> 다시 루프 (jump=0)
+상태 [2] B     -> 입력 'B' 매칭 OK (jump로 두 번째 대안 선택)
+상태 [3] #END  -> 반복 카운터=2, 탈출 선택
+상태 [4] C     -> 입력 'C' 매칭 OK
+상태 [5] #FIN  -> 수락! OK
+
+
+11.4 DEFINE 절과의 연동
+------------------------------------------------------------------------
+
+Pattern은 변수명만 저장하고, 실제 조건 평가는 DEFINE 절에서 수행:
+
+  PATTERN (A+ B)
+  DEFINE A AS price > PREV(price),
+         B AS price < PREV(price)
+
+  // NFA 매칭 시
+  if (pattern.elements[i].isVar()) {
+      const varName = pattern.elements[i].varName;
+      const condition = defineClause[varName];  // 외부에서 주입
+      if (condition(currentRow)) {
+          // 매칭 성공 -> next로 이동
+      }
+  }
+
+
+========================================================================
+12. C 포팅 고려사항
+========================================================================
+
+12.1 데이터 타입 변환
+------------------------------------------------------------------------
+
+  JS                    C 해결책
+  ----------------------------------------------------------
+  Infinity              INT_MAX
+  null/undefined        NULL 포인터
+  동적 배열 (push)      고정 크기 배열 + MAX 상수
+  객체 (AST 노드)       구조체 (struct)
+  클래스 메서드         매크로 또는 함수
+
+예시:
+  // JS
+  elem.max = Infinity;
+  elem.isVar();
+
+  // C
+  elem.max = INT_MAX;  // 무한대
+  #define IS_VAR(e) ((e)->var_name[0] != '#')
+
+
+12.2 안전한 배열 접근
+------------------------------------------------------------------------
+
+JS의 옵셔널 체이닝(?.)은 C에서 명시적 범위 검사로 대체:
+
+  // JS
+  if (tokens[pos.value]?.type === 'QUANT')
+
+  // C
+  if (pos < token_count && tokens[pos].type == TOKEN_QUANT)
+
+범위 검사 없이 접근 시 세그폴트 또는 쓰레기값 위험.
+
+
+12.3 재귀 깊이 제한
+------------------------------------------------------------------------
+
+깊은 중첩 패턴에서 스택 오버플로우 방지:
+
+  #define MAX_DEPTH 32
+
+  int parse_sequence(Context* ctx, int depth) {
+      if (depth > MAX_DEPTH) {
+          return ERROR_TOO_DEEP;
+      }
+      // ...
+      parse_sequence(ctx, depth + 1);  // 재귀 호출
+  }
+
+
+12.4 최적화 단계 (선택적)
+------------------------------------------------------------------------
+
+프로토타입에서는 최적화 단계 생략 가능:
+  - unwrapGroups: 불필요한 그룹 제거
+  - removeDuplicates: 중복 대안 제거 (astEqual 필요)
+  - optimizeQuantifiers: 수량자 병합
+
+최적화 없이도 NFA 매칭은 정상 동작함.
+성능 최적화가 필요할 때 추후 구현.
+
+
+12.5 파싱 전략
+------------------------------------------------------------------------
+
+1. Bison이 문법 규칙에 따라 ASTNode 트리 생성
+2. ASTNode에 최적화 적용 (unwrapGroups, removeDuplicates 등)
+3. 최적화된 ASTNode를 PatternElement[] 플랫 배열로 컴파일
+
+Bison 액션 예시:
+
+  seq_item: VAR quantifier {
+      $$ = create_node(NODE_VAR, $1, $2.min, $2.max, $2.reluctant);
+  }
+  | '(' sequence ')' quantifier {
+      $$ = create_group($2, $4.min, $4.max, $4.reluctant);
+  }
+
+
+12.6 구조체 정의 예시
+------------------------------------------------------------------------
+
+  typedef enum {
+      NODE_VAR,
+      NODE_SEQ,
+      NODE_GROUP,
+      NODE_ALT
+  } NodeType;
+
+  typedef struct ASTNode {
+      NodeType type;
+      char name[MAX_VAR_NAME];    // VAR용
+      int min, max;               // 수량자 (INT_MAX = Infinity)
+      bool reluctant;             // 최단 매칭 플래그
+      struct ASTNode* content;    // GROUP용
+      struct ASTNode* items;      // SEQ, ALT용
+      int item_count;
+  } ASTNode;
+
+  // ASTNode 순회 시 변수명 수집 -> 인덱스 매핑
+  typedef struct {
+      char names[MAX_VARS][MAX_VAR_NAME];  // names[0]="A", ...
+      int count;
+  } VarTable;
+
+  // 변수 인덱스 타입 (크기 조정 용이)
+  // - uint8_t: 253개 변수 (특수값 3개 제외)
+  // - uint16_t: 65533개 변수 (특수값 3개 제외)
+  // Classifiers가 var_index_t 배열이므로 State 복제 시 크기에 직접 영향
+  typedef uint8_t var_index_t;
+
+  // JS varIndex와 대응: -1=ALT, -2=END, -3=FIN
+  #define VAR_ALT  ((var_index_t)0xFD)
+  #define VAR_END  ((var_index_t)0xFE)
+  #define VAR_FIN  ((var_index_t)0xFF)
+
+  typedef struct {
+      var_index_t var_index;     // 0,1,2...=변수, VAR_ALT/END/FIN
+      uint8_t reluctant;            // 최단 매칭 플래그
+      uint16_t depth;            // 중첩 깊이
+      int min, max;              // 수량자 (max: INT_MAX = Inf)
+      uint16_t next, jump;       // 인덱스
+  } PatternElement;  // 20 bytes (패딩 포함)
+
+  // 컴파일된 패턴
+  typedef struct {
+      PatternElement* elements;
+      int count;
+      int max_depth;              // 패턴의 최대 중첩 깊이
+      bool first_match_is_greedy; // Context absorption 조건용
+  } Pattern;
+
+  // var_index_t 크기가 NFA 메모리 사용량에 가장 큰 영향을 미침.
+  // 이를 보이기 위해 NFA 상태 구조를 간략히 소개.
+  // 상세 설계는 NFA 문서에서 다룸.
+
+  // 단일 경로의 매칭 결과 (var_index 나열)
+  typedef struct {
+      var_index_t* items;        // 매칭된 var_index 배열
+      int count;
+  } Classifiers;
+
+  // NFA 상태 (간략화)
+  typedef struct {
+      uint16_t element_index;
+      Classifiers* paths;        // 경로별 매칭 결과
+      int path_count;
+      int counts[];              // 깊이별 반복 카운터
+  } NFAState;

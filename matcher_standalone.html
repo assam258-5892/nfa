@@ -1,0 +1,2256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Row Pattern Recognition Stream NFA Matcher (Standalone)</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Consolas', 'Monaco', monospace;
+            background: #0a0a0f;
+            color: #eee;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .main-layout {
+            display: flex;
+            height: 100vh;
+        }
+        .left-panel {
+            width: 50%;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #2a2a3a;
+        }
+        .right-panel {
+            width: 50%;
+            padding: 20px;
+            overflow-y: auto;
+            background: #08080c;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #00d9ff;
+            font-size: 20px;
+        }
+        h2 {
+            color: #00d9ff;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+        .config-section {
+            background: #12121a;
+            border: 1px solid #2a2a3a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .config-row {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .config-row:last-child {
+            margin-bottom: 0;
+        }
+        label {
+            color: #888;
+            font-size: 13px;
+            min-width: 80px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #2a2a3a;
+            border-radius: 5px;
+            background: #1a1a25;
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #00d9ff;
+        }
+        input[type="text"]::placeholder {
+            color: #555;
+        }
+        .btn {
+            background: #00d9ff;
+            color: #0a0a0f;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .btn:hover {
+            background: #00b8d4;
+        }
+        .btn-reset {
+            background: #e94560;
+        }
+        .btn-reset:hover {
+            background: #c73e54;
+        }
+        .btn-sm {
+            padding: 5px 12px;
+            font-size: 12px;
+        }
+        .input-section {
+            background: #12121a;
+            border: 1px solid #2a2a3a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .input-section h3 {
+            color: #00d9ff;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        .row-input-container {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        #rowInput {
+            flex: 1;
+            padding: 12px 15px;
+            font-size: 16px;
+            background: #1a1a25;
+            border: 2px solid #2a2a3a;
+        }
+        #rowInput:focus {
+            border-color: #00ff88;
+        }
+        .row-counter {
+            background: #00d9ff;
+            color: #0a0a0f;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-weight: bold;
+            min-width: 80px;
+            text-align: center;
+        }
+        .help-text {
+            color: #666;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .pattern-display {
+            background: #1a1a25;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+        }
+        .pattern-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .pattern-table th, .pattern-table td {
+            border: 1px solid #2a2a3a;
+            padding: 6px 10px;
+            text-align: center;
+        }
+        .pattern-table th {
+            background: #2a2a3a;
+            color: #00d9ff;
+        }
+        .pattern-table td.active {
+            background: #00d9ff;
+            color: #0a0a0f;
+            font-weight: bold;
+        }
+        .pattern-table td.group-end {
+            background: #3a3a4a;
+            color: #ffd700;
+        }
+        .pattern-table td.alternation {
+            background: #4a3a5a;
+            color: #ff88ff;
+        }
+        .right-panel h2 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #2a2a3a;
+        }
+        .history-list {
+            overflow-y: auto;
+        }
+        .history-row {
+            background: #1a1a25;
+            border: 1px solid #2a2a3a;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+        .history-row.match-complete {
+            border-color: #00ff88;
+        }
+        .history-row-header {
+            background: #2a2a3a;
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .row-num {
+            background: #00d9ff;
+            color: #0a0a0f;
+            padding: 3px 10px;
+            border-radius: 3px;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .row-num.match {
+            background: #00ff88;
+        }
+        .row-input-display {
+            color: #ffd700;
+            font-size: 13px;
+        }
+        .row-input-display .true-var {
+            color: #00ff88;
+            font-weight: bold;
+        }
+        .history-row-body {
+            padding: 15px;
+        }
+        .context-block {
+            background: #0a0a0f;
+            border-left: 3px solid #00d9ff;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 0 5px 5px 0;
+        }
+        .context-block:last-child {
+            margin-bottom: 0;
+        }
+        .context-block.completed {
+            border-left-color: #00ff88;
+        }
+        .context-block.potential {
+            border-left-color: #ffaa00;
+        }
+        .context-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .context-title {
+            color: #00d9ff;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .context-title.completed {
+            color: #00ff88;
+        }
+        .context-title.potential {
+            color: #ffaa00;
+        }
+        .context-range {
+            color: #888;
+            font-size: 11px;
+        }
+        .state-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .state-item {
+            background: #1a1a25;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .state-elem {
+            color: #00d9ff;
+        }
+        .state-counts {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+        .count-badge {
+            background: #3a3a4a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            color: #aaa;
+        }
+        .log-entry {
+            font-size: 11px;
+            padding: 4px 0;
+            color: #888;
+            border-bottom: 1px solid #1a1a25;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-entry.success {
+            color: #00ff88;
+        }
+        .log-entry.warning {
+            color: #ffd700;
+        }
+        .log-entry.error {
+            color: #e94560;
+        }
+        .match-banner {
+            background: linear-gradient(90deg, #00ff88, #00d9ff);
+            color: #0a0a0f;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .no-context {
+            color: #666;
+            text-align: center;
+            padding: 30px;
+        }
+        .examples {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .example-btn {
+            background: transparent;
+            border: 1px solid #3a3a4a;
+            color: #888;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            font-family: inherit;
+        }
+        .example-btn:hover {
+            border-color: #00d9ff;
+            color: #00d9ff;
+        }
+        .variables-display {
+            color: #666;
+            font-size: 12px;
+        }
+        .variables-display span {
+            color: #00d9ff;
+            margin-left: 5px;
+        }
+        .parse-error {
+            color: #e94560;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <!-- Left Panel: Pattern & Input -->
+        <div class="left-panel">
+            <h1>Row Pattern Recognition Stream NFA Matcher</h1>
+
+            <div class="config-section">
+                <div class="config-row">
+                    <label>Pattern:</label>
+                    <input type="text" id="patternInput" value="( A | ( B | ( C | ( D | E ) ) ) )" placeholder="e.g., A B+ C*">
+                    <button class="btn" onclick="applyPattern()">Apply</button>
+                    <button class="btn btn-reset" onclick="resetAll()">Reset</button>
+                </div>
+                <div class="config-row">
+                    <label>Examples:</label>
+                    <div class="examples">
+                        <button class="example-btn" onclick="loadExample('A+ ( B | A )+')">A+ (B|A)+</button>
+                        <button class="example-btn" onclick="loadExample('A B+ C')">A B+ C</button>
+                        <button class="example-btn" onclick="loadExample('( A | B | C )')">A | B | C</button>
+                        <button class="example-btn" onclick="loadExample('( ( A B ) | ( C D ) ) E')">((A B)|(C D)) E</button>
+                        <button class="example-btn" onclick="loadExample('( A B ){2,3} C')">(A B){2,3} C</button>
+                        <button class="example-btn" onclick="loadExample('( ( A | B )+ ( C | D )* ){1,2} ( ( E F ) | ( G H ) ){2,} I?')">EXTREME</button>
+                    </div>
+                </div>
+                <div class="config-row">
+                    <label></label>
+                    <div class="variables-display">
+                        Variables:<span id="variablesDisplay">A, B, C</span>
+                    </div>
+                </div>
+                <div class="config-row">
+                    <label>Optimize:</label>
+                    <div class="examples">
+                        <button class="example-btn" onclick="applyOptimization('reset')" title="Remove all optimizations">↺ Reset</button>
+                        <button class="example-btn" onclick="applyOptimization('unwrap')" title="Remove {1,1} groups, single-item wrappers, flatten nested structures&#10;Examples:&#10;• ((A)) → A&#10;• (A B){1,1} → A B&#10;• (A B) C → A B C&#10;• A | (B | C) → A | B | C">⚡ Unwrap</button>
+                        <button class="example-btn" onclick="applyOptimization('removeDup')" title="Remove duplicate alternatives&#10;Examples:&#10;• A | B | A → A | B&#10;• (A B) | (C D) | (A B) → (A B) | (C D)">✗ Dup</button>
+                        <button class="example-btn" onclick="applyOptimization('optimizeQuant')" title="Optimize quantifiers&#10;Examples:&#10;• (A{3}){2} → A{6}&#10;• (A{2,5}){3} → A{6,15}&#10;• A A A → A{3}">∑ Quant</button>
+                        <button class="example-btn" onclick="applyOptimization('all')" title="Apply all optimizations in order">⚡ All</button>
+                    </div>
+                </div>
+                <div class="config-row">
+                    <label></label>
+                    <div class="variables-display">
+                        Optimized:<span id="optimizedPattern"></span>
+                    </div>
+                </div>
+                <div id="parseError" class="parse-error"></div>
+            </div>
+
+            <div class="pattern-display" id="patternDisplay">
+                <!-- Pattern visualization -->
+            </div>
+
+            <div class="input-section">
+                <h3>Row Input</h3>
+                <div class="row-input-container">
+                    <div class="row-counter">Row <span id="rowCounter">0</span></div>
+                    <input type="text" id="rowInput" placeholder="e.g., 'A B' means A=true, B=true" autofocus>
+                </div>
+                <p class="help-text">
+                    Type variable names separated by space. Press Enter to submit.
+                </p>
+            </div>
+
+            <!-- Current State Summary -->
+            <div class="input-section" id="currentState">
+                <h3>Current Active Contexts</h3>
+                <div id="currentContexts" class="no-context">No active contexts</div>
+            </div>
+        </div>
+
+        <!-- Right Panel: History -->
+        <div class="right-panel">
+            <h2>
+                History
+                <button class="btn btn-sm btn-reset" onclick="clearHistory()">Clear</button>
+            </h2>
+            <div class="history-list" id="historyList">
+                <div class="no-context">Enter rows to see state changes...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+// ============== parser.js ==============
+
+class PatternElement {
+    constructor(varName) {
+        this.varName = varName;
+        this.varIndex = -1;
+        this.depth = 0;
+        this.min = 1;
+        this.max = 1;
+        this.next = -1;
+        this.jump = -1;
+    }
+
+    isVar() { return this.varName && !this.varName.startsWith('#'); }
+    isAltStart() { return this.varName === '#ALT'; }
+    isGroupEnd() { return this.varName === '#END'; }
+    isFinish() { return this.varName === '#FIN'; }
+    canSkip() { return this.min === 0; }
+}
+
+class Pattern {
+    constructor() {
+        this.elements = [];
+        this.variables = [];
+        this.maxDepth = 0;
+    }
+}
+
+function tokenize(str) {
+    const tokens = [];
+    let i = 0;
+    let lastToken = null;
+
+    while (i < str.length) {
+        const c = str[i];
+        if (c === ' ' || c === '\t') { i++; continue; }
+
+        if (c === '(') {
+            tokens.push({ type: 'LPAREN' });
+            lastToken = 'LPAREN';
+            i++;
+        }
+        else if (c === ')') {
+            if (lastToken === 'LPAREN') {
+                throw new Error(`Syntax error at position ${i}: Empty group () is not allowed.`);
+            }
+            if (lastToken === 'ALT') {
+                throw new Error(`Syntax error at position ${i}: Empty alternation before ) is not allowed.`);
+            }
+            tokens.push({ type: 'RPAREN' });
+            lastToken = 'RPAREN';
+            i++;
+        }
+        else if (c === '|') {
+            if (lastToken === null) {
+                throw new Error(`Syntax error at position ${i}: Pattern cannot start with |`);
+            }
+            if (lastToken === 'ALT') {
+                throw new Error(`Syntax error at position ${i}: Empty alternation (consecutive ||) is not allowed.`);
+            }
+            if (lastToken === 'LPAREN') {
+                throw new Error(`Syntax error at position ${i}: Alternation cannot immediately follow (`);
+            }
+            tokens.push({ type: 'ALT' });
+            lastToken = 'ALT';
+            i++;
+        }
+        else if (c === '?' || c === '*' || c === '+' || c === '{') {
+            if (lastToken !== 'VAR' && lastToken !== 'RPAREN') {
+                const quantDesc = c === '{' ? '{n,m}' : c;
+                throw new Error(`Syntax error at position ${i}: Quantifier ${quantDesc} must follow a variable or group, not ${lastToken || 'start'}.`);
+            }
+
+            if (c === '?') {
+                tokens.push({ type: 'QUANT', min: 0, max: 1 });
+                lastToken = 'QUANT';
+                i++;
+            }
+            else if (c === '*') {
+                tokens.push({ type: 'QUANT', min: 0, max: Infinity });
+                lastToken = 'QUANT';
+                i++;
+            }
+            else if (c === '+') {
+                tokens.push({ type: 'QUANT', min: 1, max: Infinity });
+                lastToken = 'QUANT';
+                i++;
+            }
+            else if (c === '{') {
+                if (str[i + 1] === '-') {
+                    throw new Error(`Unsupported syntax at position ${i}: Exclusion {- -} is not supported.`);
+                }
+                let j = i + 1;
+                while (j < str.length && str[j] !== '}') j++;
+                if (j >= str.length) {
+                    throw new Error(`Syntax error at position ${i}: Unclosed quantifier {, missing }.`);
+                }
+                const range = str.substring(i + 1, j);
+                if (range.trim() === '') {
+                    throw new Error(`Syntax error at position ${i}: Empty quantifier {} is not allowed.`);
+                }
+                const parts = range.split(',');
+                if (parts.length > 2) {
+                    throw new Error(`Syntax error at position ${i}: Invalid quantifier {${range}}.`);
+                }
+
+                const minStr = parts[0].trim();
+                let min;
+                if (minStr === '' && parts.length > 1) {
+                    min = 0;
+                } else {
+                    min = parseInt(minStr);
+                    if (isNaN(min) || min < 0) {
+                        throw new Error(`Syntax error at position ${i}: Invalid quantifier {${range}}.`);
+                    }
+                }
+
+                let max;
+                if (parts.length > 1) {
+                    const maxStr = parts[1].trim();
+                    if (maxStr === '') {
+                        max = Infinity;
+                    } else {
+                        max = parseInt(maxStr);
+                        if (isNaN(max) || max < 0 || max === 0 || min > max) {
+                            throw new Error(`Syntax error at position ${i}: Invalid quantifier {${range}}.`);
+                        }
+                    }
+                } else {
+                    max = min;
+                    if (min === 0) {
+                        throw new Error(`Syntax error at position ${i}: Quantifier {0} is not allowed.`);
+                    }
+                }
+
+                tokens.push({ type: 'QUANT', min, max });
+                lastToken = 'QUANT';
+                i = j + 1;
+            }
+        }
+        else if (/[A-Za-z]/.test(c)) {
+            let j = i;
+            while (j < str.length && /[A-Za-z0-9_]/.test(str[j])) j++;
+            const varName = str.substring(i, j);
+
+            if (varName.toUpperCase() === 'PERMUTE') {
+                throw new Error(`Unsupported syntax at position ${i}: PERMUTE is not supported.`);
+            }
+
+            tokens.push({ type: 'VAR', name: varName });
+            lastToken = 'VAR';
+            i = j;
+        }
+        else if (c === '&') {
+            throw new Error(`Unsupported syntax at position ${i}: AND operator (&) is not supported.`);
+        }
+        else if (c === '^' || c === '$') {
+            throw new Error(`Unsupported syntax at position ${i}: Anchors (^ $) are not supported.`);
+        }
+        else {
+            throw new Error(`Invalid character '${c}' at position ${i}`);
+        }
+    }
+
+    if (lastToken === 'ALT') {
+        throw new Error(`Syntax error: Pattern cannot end with |`);
+    }
+
+    let parenCount = 0;
+    for (const token of tokens) {
+        if (token.type === 'LPAREN') parenCount++;
+        if (token.type === 'RPAREN') parenCount--;
+        if (parenCount < 0) {
+            throw new Error(`Syntax error: Unmatched closing parenthesis )`);
+        }
+    }
+    if (parenCount > 0) {
+        throw new Error(`Syntax error: Unclosed parenthesis (`);
+    }
+
+    return tokens;
+}
+
+function parseSequence(tokens, pos, variables) {
+    const items = [];
+
+    while (pos.value < tokens.length) {
+        const token = tokens[pos.value];
+
+        if (token.type === 'RPAREN') {
+            break;
+        }
+
+        if (token.type === 'ALT') {
+            const alternatives = [{ type: 'SEQ', items: [...items] }];
+            items.length = 0;
+            pos.value++;
+
+            while (pos.value < tokens.length) {
+                const altItems = [];
+
+                while (pos.value < tokens.length) {
+                    const t = tokens[pos.value];
+                    if (t.type === 'RPAREN' || t.type === 'ALT') break;
+
+                    if (t.type === 'LPAREN') {
+                        pos.value++;
+                        const group = parseSequence(tokens, pos, variables);
+                        if (tokens[pos.value]?.type === 'RPAREN') pos.value++;
+                        let min = 1, max = 1;
+                        if (tokens[pos.value]?.type === 'QUANT') {
+                            min = tokens[pos.value].min;
+                            max = tokens[pos.value].max;
+                            pos.value++;
+                        }
+                        altItems.push({ type: 'GROUP', content: group, min, max });
+                    } else if (t.type === 'VAR') {
+                        variables.add(t.name);
+                        pos.value++;
+                        let min = 1, max = 1;
+                        if (tokens[pos.value]?.type === 'QUANT') {
+                            min = tokens[pos.value].min;
+                            max = tokens[pos.value].max;
+                            pos.value++;
+                        }
+                        altItems.push({ type: 'VAR', name: t.name, min, max });
+                    } else {
+                        throw new Error(`Internal error: Unexpected token type '${t.type}'`);
+                    }
+                }
+
+                alternatives.push({ type: 'SEQ', items: altItems });
+
+                if (tokens[pos.value]?.type === 'ALT') {
+                    pos.value++;
+                } else {
+                    break;
+                }
+            }
+
+            return { type: 'ALT', alternatives };
+        }
+
+        if (token.type === 'LPAREN') {
+            pos.value++;
+            const group = parseSequence(tokens, pos, variables);
+            if (tokens[pos.value]?.type === 'RPAREN') pos.value++;
+            let min = 1, max = 1;
+            if (tokens[pos.value]?.type === 'QUANT') {
+                min = tokens[pos.value].min;
+                max = tokens[pos.value].max;
+                pos.value++;
+            }
+            items.push({ type: 'GROUP', content: group, min, max });
+        } else if (token.type === 'VAR') {
+            variables.add(token.name);
+            pos.value++;
+            let min = 1, max = 1;
+            if (tokens[pos.value]?.type === 'QUANT') {
+                min = tokens[pos.value].min;
+                max = tokens[pos.value].max;
+                pos.value++;
+            }
+            items.push({ type: 'VAR', name: token.name, min, max });
+        } else {
+            throw new Error(`Internal error: Unexpected token type '${token.type}'`);
+        }
+    }
+
+    return { type: 'SEQ', items };
+}
+
+function unwrapGroups(node) {
+    if (!node) return node;
+
+    if (node.type === 'SEQ') {
+        node.items = node.items.map(unwrapGroups);
+        const newItems = [];
+        for (const item of node.items) {
+            if (item.type === 'GROUP' && item.min === 1 && item.max === 1) {
+                if (item.content.type === 'SEQ') {
+                    newItems.push(...item.content.items);
+                } else {
+                    newItems.push(item.content);
+                }
+            } else if (item.type === 'SEQ') {
+                newItems.push(...item.items);
+            } else {
+                newItems.push(item);
+            }
+        }
+        node.items = newItems;
+        if (node.items.length === 1) {
+            return node.items[0];
+        }
+        return node;
+    }
+
+    if (node.type === 'GROUP') {
+        node.content = unwrapGroups(node.content);
+        if (node.min === 1 && node.max === 1) {
+            return node.content;
+        }
+        return node;
+    }
+
+    if (node.type === 'ALT') {
+        node.alternatives = node.alternatives.map(unwrapGroups);
+        const newAlts = [];
+        for (const alt of node.alternatives) {
+            if (alt.type === 'ALT') {
+                newAlts.push(...alt.alternatives);
+            } else {
+                newAlts.push(alt);
+            }
+        }
+        node.alternatives = newAlts;
+        if (node.alternatives.length === 1) {
+            return node.alternatives[0];
+        }
+        return node;
+    }
+
+    return node;
+}
+
+function removeDuplicates(node) {
+    if (!node) return node;
+
+    if (node.type === 'SEQ') {
+        node.items = node.items.map(removeDuplicates);
+        return node;
+    }
+
+    if (node.type === 'GROUP') {
+        node.content = removeDuplicates(node.content);
+        return node;
+    }
+
+    if (node.type === 'ALT') {
+        node.alternatives = node.alternatives.map(removeDuplicates);
+        const seen = new Map();
+        const unique = [];
+        for (const alt of node.alternatives) {
+            const key = JSON.stringify(alt);
+            if (!seen.has(key)) {
+                seen.set(key, true);
+                unique.push(alt);
+            }
+        }
+        node.alternatives = unique;
+        if (node.alternatives.length === 1) {
+            return node.alternatives[0];
+        }
+        return node;
+    }
+
+    return node;
+}
+
+function optimizeQuantifiers(node) {
+    if (!node) return node;
+
+    if (node.type === 'SEQ') {
+        node.items = node.items.map(optimizeQuantifiers);
+        const newItems = [];
+        let i = 0;
+        while (i < node.items.length) {
+            const item = node.items[i];
+            if (item.type === 'VAR' && item.min === 1 && item.max === 1) {
+                let count = 1;
+                while (i + count < node.items.length) {
+                    const next = node.items[i + count];
+                    if (next.type === 'VAR' && next.name === item.name &&
+                        next.min === 1 && next.max === 1) {
+                        count++;
+                    } else {
+                        break;
+                    }
+                }
+                if (count > 1) {
+                    const merged = { ...item };
+                    merged.min = count;
+                    merged.max = count;
+                    newItems.push(merged);
+                    i += count;
+                } else {
+                    newItems.push(item);
+                    i++;
+                }
+            } else {
+                newItems.push(item);
+                i++;
+            }
+        }
+        node.items = newItems;
+        return node;
+    }
+
+    if (node.type === 'GROUP') {
+        node.content = optimizeQuantifiers(node.content);
+        let innerNode = null;
+        if (node.content.type === 'VAR' || node.content.type === 'GROUP') {
+            innerNode = node.content;
+        } else if (node.content.type === 'SEQ' && node.content.items.length === 1) {
+            innerNode = node.content.items[0];
+        }
+        if (innerNode && (node.min === node.max || innerNode.min === innerNode.max)) {
+            const newMin = innerNode.min * node.min;
+            const newMax = innerNode.max * node.max;
+            if (innerNode.type === 'VAR') {
+                return { type: 'VAR', name: innerNode.name, min: newMin, max: newMax };
+            } else if (innerNode.type === 'GROUP') {
+                return { type: 'GROUP', content: innerNode.content, min: newMin, max: newMax };
+            }
+        }
+        return node;
+    }
+
+    if (node.type === 'ALT') {
+        node.alternatives = node.alternatives.map(optimizeQuantifiers);
+        return node;
+    }
+
+    return node;
+}
+
+function optimizeAST(node) {
+    node = unwrapGroups(node);
+    node = removeDuplicates(node);
+    node = optimizeQuantifiers(node);
+    return node;
+}
+
+function astToString(node, parentType = null) {
+    if (!node) return '';
+
+    function quantStr(min, max) {
+        const inf = (max === null || max === Infinity);
+        if (min === 1 && max === 1) return '';
+        if (min === 0 && max === 1) return '?';
+        if (min === 0 && inf) return '*';
+        if (min === 1 && inf) return '+';
+        if (min === max) return `{${min}}`;
+        if (inf) return `{${min},}`;
+        return `{${min},${max}}`;
+    }
+
+    if (node.type === 'SEQ') {
+        return node.items.map(item => astToString(item, 'SEQ')).join(' ');
+    }
+
+    if (node.type === 'VAR') {
+        return node.name + quantStr(node.min, node.max);
+    }
+
+    if (node.type === 'GROUP') {
+        const inner = astToString(node.content, 'GROUP');
+        return '( ' + inner + ' )' + quantStr(node.min, node.max);
+    }
+
+    if (node.type === 'ALT') {
+        const altStr = node.alternatives.map(alt => astToString(alt, 'ALT')).join(' | ');
+        if (parentType === 'SEQ') {
+            return '( ' + altStr + ' )';
+        }
+        return altStr;
+    }
+
+    return '';
+}
+
+function parsePatternAST(patternStr) {
+    const variables = new Set();
+    const tokens = tokenize(patternStr);
+    let pos = { value: 0 };
+    let ast = parseSequence(tokens, pos, variables);
+    const pattern = astToPattern(ast, variables);
+    return pattern;
+}
+
+function astToPattern(ast, variables) {
+    const pattern = new Pattern();
+    pattern.variables = Array.from(variables);
+
+    const finIdx = -999;
+    astToElements(ast, pattern, 0, finIdx);
+
+    const finElem = new PatternElement('#FIN');
+    finElem.depth = 0;
+    finElem.min = 1;
+    finElem.max = 1;
+    finElem.next = -1;
+    const actualFinIdx = pattern.elements.length;
+    pattern.elements.push(finElem);
+
+    for (const elem of pattern.elements) {
+        if (elem.next === finIdx) {
+            elem.next = actualFinIdx;
+        }
+    }
+
+    pattern.maxDepth = Math.max(...pattern.elements.map(e => e.depth), 0);
+
+    return pattern;
+}
+
+function astToElements(node, pattern, depth, afterIdx) {
+    if (!node) return -1;
+
+    const startIdx = pattern.elements.length;
+
+    if (node.type === 'VAR') {
+        const elem = new PatternElement(node.name);
+        elem.min = node.min;
+        elem.max = node.max;
+        elem.depth = depth;
+        elem.next = afterIdx !== null ? afterIdx : -1;
+        pattern.elements.push(elem);
+        return startIdx;
+
+    } else if (node.type === 'SEQ') {
+        const itemIndices = [];
+        for (let i = 0; i < node.items.length; i++) {
+            itemIndices.push(pattern.elements.length);
+            astToElements(node.items[i], pattern, depth, -1);
+        }
+
+        for (let i = 0; i < itemIndices.length; i++) {
+            const currentIdx = itemIndices[i];
+            const nextItemIdx = (i < itemIndices.length - 1) ? itemIndices[i + 1] : afterIdx;
+            const endIdx = (i < itemIndices.length - 1) ? itemIndices[i + 1] : pattern.elements.length;
+            for (let j = currentIdx; j < endIdx; j++) {
+                if (pattern.elements[j].next === -1) {
+                    pattern.elements[j].next = nextItemIdx !== null ? nextItemIdx : -1;
+                }
+            }
+        }
+
+        return startIdx;
+
+    } else if (node.type === 'GROUP') {
+        const groupStartIdx = pattern.elements.length;
+        astToElements(node.content, pattern, depth + 1, null);
+
+        const groupEnd = new PatternElement('#END');
+        groupEnd.depth = depth;
+        groupEnd.min = node.min;
+        groupEnd.max = node.max;
+        groupEnd.jump = groupStartIdx;
+        groupEnd.next = afterIdx !== null ? afterIdx : -1;
+
+        const groupEndIdx = pattern.elements.length;
+        pattern.elements.push(groupEnd);
+
+        for (let i = groupStartIdx; i < groupEndIdx; i++) {
+            if (pattern.elements[i].next === null || pattern.elements[i].next === -1) {
+                pattern.elements[i].next = groupEndIdx;
+            }
+        }
+
+        return startIdx;
+
+    } else if (node.type === 'ALT') {
+        const altStart = new PatternElement('#ALT');
+        altStart.depth = depth;
+        pattern.elements.push(altStart);
+
+        const branchStarts = [];
+
+        for (let i = 0; i < node.alternatives.length; i++) {
+            const branchStartIdx = pattern.elements.length;
+            branchStarts.push(branchStartIdx);
+            astToElements(node.alternatives[i], pattern, depth + 1, afterIdx);
+        }
+
+        if (branchStarts.length > 0) {
+            altStart.next = branchStarts[0];
+        }
+
+        for (let i = 0; i < branchStarts.length - 1; i++) {
+            const firstElemIdx = branchStarts[i];
+            const nextBranchIdx = branchStarts[i + 1];
+            pattern.elements[firstElemIdx].jump = nextBranchIdx;
+        }
+
+        return startIdx;
+    }
+
+    return startIdx;
+}
+
+// ============== nfa.js ==============
+
+class MatchState {
+    constructor(elementIndex, counts = [], matchedPaths = [[]]) {
+        this.elementIndex = elementIndex;
+        this.counts = [...counts];
+        this.matchedPaths = matchedPaths.map(p => [...p]);
+    }
+
+    clone() {
+        return new MatchState(
+            this.elementIndex,
+            [...this.counts],
+            this.matchedPaths.map(p => [...p])
+        );
+    }
+
+    withMatch(varName) {
+        const s = this.clone();
+        s.matchedPaths = s.matchedPaths.map(p => [...p, varName]);
+        return s;
+    }
+
+    mergePaths(other) {
+        const existing = new Set(this.matchedPaths.map(p => p.join(',')));
+        for (const path of other.matchedPaths) {
+            const key = path.join(',');
+            if (!existing.has(key)) {
+                this.matchedPaths.push([...path]);
+                existing.add(key);
+            }
+        }
+    }
+
+    hash() {
+        return `${this.elementIndex}:${this.counts.join(',')}`;
+    }
+}
+
+let _ctxId = 0;
+
+class MatchContext {
+    constructor(matchStart) {
+        this.id = _ctxId++;
+        this.matchStart = matchStart;
+        this.matchEnd = -1;
+        this.isCompleted = false;
+        this.states = [];
+        this.completedPaths = [];
+        this._pathSet = new Set();
+    }
+
+    addCompletedPath(path) {
+        if (!path || path.length === 0) return;
+        const key = path.join(',');
+        if (!this._pathSet.has(key)) {
+            this._pathSet.add(key);
+            this.completedPaths.push([this.id, ...path]);
+        }
+    }
+}
+
+class NFAExecutor {
+    constructor(pattern) {
+        this.pattern = pattern;
+        this.contexts = [];
+        this.currentRow = -1;
+        this.history = [];
+        _ctxId = 0;
+    }
+
+    reset() {
+        this.contexts = [];
+        this.currentRow = -1;
+        this.history = [];
+        _ctxId = 0;
+    }
+
+    processRow(trueVars) {
+        this.currentRow++;
+        const row = this.currentRow;
+        const logs = [];
+        const log = (msg, type = 'info') => logs.push({ message: msg, type });
+        const stateMerges = [];
+
+        log(`Processing row ${row}: [${trueVars.join(', ') || 'none'}]`);
+
+        this.tryStartNewContext(row, trueVars, log, stateMerges);
+
+        const discardedStates = [];
+        const deadStates = [];
+        for (const ctx of this.contexts) {
+            if (ctx.isCompleted || ctx.matchStart === row) continue;
+            const result = this.processContext(ctx, row, trueVars, log, stateMerges);
+            if (result) {
+                if (result.discardedStates) discardedStates.push(...result.discardedStates);
+                if (result.deadStates) deadStates.push(...result.deadStates);
+            }
+        }
+
+        const absorptions = this.absorbContexts(log);
+
+        // Include contexts that have states, are completed, or have dead states in this row
+        const deadContextIds = new Set(deadStates.map(ds => ds.contextId));
+        const contextSnapshot = this.contexts
+            .filter(ctx => ctx.states.length > 0 || ctx.isCompleted || deadContextIds.has(ctx.id))
+            .map(ctx => ({
+                id: ctx.id,
+                matchStart: ctx.matchStart,
+                matchEnd: ctx.matchEnd,
+                isCompleted: ctx.isCompleted,
+                isDead: ctx.states.length === 0 && !ctx.isCompleted,
+                completedPaths: [...ctx.completedPaths],
+                states: ctx.states.map(s => ({
+                    elementIndex: s.elementIndex,
+                    counts: [...s.counts],
+                    matchedPaths: s.matchedPaths.map(p => [...p])
+                }))
+            }));
+
+        this.history.push({ row, input: [...trueVars], contexts: contextSnapshot, absorptions, stateMerges, discardedStates, deadStates, logs });
+
+        this.contexts = this.contexts.filter(ctx => ctx.states.length > 0 && !ctx.isCompleted);
+
+        return { row, contexts: contextSnapshot, absorptions, stateMerges, discardedStates, deadStates, logs };
+    }
+
+    tryStartNewContext(row, trueVars, log, stateMerges) {
+        if (this.pattern.elements.length === 0) return;
+
+        const initCounts = new Array(this.pattern.maxDepth + 1).fill(0);
+        const initState = new MatchState(0, initCounts);
+
+        const waitStates = this.expandToWaitPositions([initState]);
+
+        const consumableStates = [];
+        for (const state of waitStates) {
+            if (state.elementIndex === -1) continue;
+            const elem = this.pattern.elements[state.elementIndex];
+            if (!elem) continue;
+
+            if (elem.isVar() && trueVars.includes(elem.varName)) {
+                consumableStates.push(state);
+            } else if (elem.isAltStart()) {
+                let altIdx = elem.next;
+                while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
+                    const altElem = this.pattern.elements[altIdx];
+                    if (altElem && altElem.isVar() && trueVars.includes(altElem.varName)) {
+                        const altState = state.clone();
+                        altState.elementIndex = altIdx;
+                        consumableStates.push(altState);
+                    }
+                    altIdx = altElem ? altElem.jump : -1;
+                }
+            }
+        }
+
+        if (consumableStates.length === 0) return;
+
+        const ctx = new MatchContext(row);
+
+        const { activeStates, completedStates } = this.consumeInput(consumableStates, trueVars, log, stateMerges, ctx.id);
+
+        let nextWaitStates = this.expandToWaitPositions(Array.from(activeStates.values()));
+
+        const patternVars = this.pattern.variables;
+        const hasPatternMatch = trueVars.some(v => patternVars.includes(v));
+        if (!hasPatternMatch) {
+            nextWaitStates = this.filterNonViableStates(nextWaitStates, trueVars);
+        }
+
+        for (const state of nextWaitStates) {
+            if (state.elementIndex === -1) {
+                const hash = state.hash();
+                if (completedStates.has(hash)) {
+                    completedStates.get(hash).mergePaths(state);
+                } else {
+                    completedStates.set(hash, state);
+                }
+            } else {
+                ctx.states.push(state);
+            }
+        }
+
+        ctx.states = this.mergeStates(ctx.states, stateMerges, ctx.id);
+
+        for (const state of completedStates.values()) {
+            for (const path of state.matchedPaths) {
+                ctx.addCompletedPath(path);
+            }
+        }
+
+        if (ctx.completedPaths.length > 0) {
+            const maxLen = Math.max(...ctx.completedPaths.map(p => p.length - 1));
+            ctx.matchEnd = ctx.matchStart + maxLen - 1;
+            if (ctx.states.length === 0) {
+                ctx.isCompleted = true;
+                log(`MATCH COMPLETE! rows ${ctx.matchStart}-${ctx.matchEnd}`, 'success');
+            } else {
+                log(`Potential match at rows ${ctx.matchStart}-${ctx.matchEnd}, continuing...`, 'warning');
+            }
+        }
+
+        if (ctx.states.length > 0 || ctx.isCompleted) {
+            this.contexts.push(ctx);
+            log(`New context #${ctx.id} started at row ${row}`, 'success');
+        }
+    }
+
+    processContext(ctx, row, trueVars, log, stateMerges) {
+        const { activeStates, completedStates, deadStates } = this.consumeInput(ctx.states, trueVars, log, stateMerges, ctx.id);
+
+        let nextWaitStates = this.expandToWaitPositions(Array.from(activeStates.values()));
+
+        const patternVars = this.pattern.variables;
+        const hasPatternMatch = trueVars.some(v => patternVars.includes(v));
+        if (!hasPatternMatch) {
+            nextWaitStates = this.filterNonViableStates(nextWaitStates, trueVars);
+        }
+
+        ctx.states = [];
+        for (const state of nextWaitStates) {
+            if (state.elementIndex === -1) {
+                const hash = state.hash();
+                if (completedStates.has(hash)) {
+                    completedStates.get(hash).mergePaths(state);
+                } else {
+                    completedStates.set(hash, state);
+                }
+            } else {
+                ctx.states.push(state);
+            }
+        }
+
+        ctx.states = this.mergeStates(ctx.states, stateMerges, ctx.id);
+
+        const discardedStates = [];
+        const canProgressFurther = ctx.states.some(s => {
+            const elem = this.pattern.elements[s.elementIndex];
+            return elem && (elem.isVar() || elem.isAltStart());
+        });
+
+        if (completedStates.size > 0 && ctx.states.length > 0 && canProgressFurther && hasPatternMatch) {
+            for (const state of completedStates.values()) {
+                discardedStates.push({
+                    contextId: ctx.id,
+                    elementIndex: state.elementIndex,
+                    counts: [...state.counts],
+                    matchedPaths: state.matchedPaths.map(p => [...p]),
+                    reason: 'shorter_match'
+                });
+                log(`Discarding shorter match: ${state.matchedPaths.map(p => p.join(' ')).join(' | ')}`, 'warning');
+            }
+        } else {
+            for (const state of completedStates.values()) {
+                for (const path of state.matchedPaths) {
+                    ctx.addCompletedPath(path);
+                }
+            }
+        }
+
+        if (ctx.completedPaths.length > 0) {
+            const maxLen = Math.max(...ctx.completedPaths.map(p => p.length - 1));
+            ctx.matchEnd = ctx.matchStart + maxLen - 1;
+        }
+
+        if (ctx.states.length === 0) {
+            if (ctx.completedPaths.length > 0 || ctx.matchEnd >= 0) {
+                ctx.isCompleted = true;
+                log(`MATCH COMPLETE! rows ${ctx.matchStart}-${ctx.matchEnd}`, 'success');
+            } else {
+                log(`Context #${ctx.id} died - no valid states`, 'error');
+            }
+        } else if (ctx.completedPaths.length > 0) {
+            log(`Potential match at rows ${ctx.matchStart}-${ctx.matchEnd}, continuing...`, 'warning');
+        }
+
+        return { discardedStates, deadStates };
+    }
+
+    consumeInput(states, trueVars, log, stateMerges, ctxId) {
+        const activeStates = new Map();
+        const completedStates = new Map();
+        const deadStates = [];
+
+        for (const state of states) {
+            const results = this.transition(state, trueVars, log);
+            if (results.length === 0) {
+                deadStates.push({
+                    contextId: ctxId,
+                    elementIndex: state.elementIndex,
+                    counts: [...state.counts],
+                    matchedPaths: state.matchedPaths.map(p => [...p]),
+                    reason: 'mismatch'
+                });
+            }
+            for (const newState of results) {
+                const hash = newState.hash();
+                if (newState.elementIndex === -1) {
+                    if (completedStates.has(hash)) {
+                        completedStates.get(hash).mergePaths(newState);
+                    } else {
+                        completedStates.set(hash, newState);
+                    }
+                } else {
+                    if (activeStates.has(hash)) {
+                        activeStates.get(hash).mergePaths(newState);
+                    } else {
+                        activeStates.set(hash, newState);
+                    }
+                }
+            }
+        }
+
+        return { activeStates, completedStates, deadStates };
+    }
+
+    transition(state, trueVars, log) {
+        const results = [];
+        if (state.elementIndex === -1) return results;
+
+        const elem = this.pattern.elements[state.elementIndex];
+        if (!elem) {
+            results.push(new MatchState(-1, state.counts, state.matchedPaths));
+            return results;
+        }
+
+        if (elem.isVar()) {
+            this.transitionVar(state, elem, trueVars, log, results);
+        } else if (elem.isAltStart()) {
+            this.transitionAlt(state, elem, trueVars, log, results);
+        } else if (elem.isGroupEnd()) {
+            this.transitionGroupEnd(state, elem, log, results);
+        } else if (elem.isFinish()) {
+            results.push(new MatchState(-1, state.counts, state.matchedPaths));
+        }
+
+        return results;
+    }
+
+    transitionVar(state, elem, trueVars, log, results) {
+        const matches = trueVars.includes(elem.varName);
+        const count = state.counts[elem.depth] || 0;
+
+        if (matches) {
+            const newCount = count + 1;
+            const newState = state.withMatch(elem.varName);
+            newState.counts[elem.depth] = newCount;
+
+            if (newCount < elem.max) {
+                results.push(newState);
+                log(`${elem.varName} matched (${newCount}), staying`);
+            } else {
+                newState.counts[elem.depth] = 0;
+                newState.elementIndex = elem.next;
+                results.push(newState);
+                log(`${elem.varName} matched (max=${elem.max}), advancing`);
+            }
+        } else {
+            if (count >= elem.min) {
+                const newState = state.clone();
+                newState.counts[elem.depth] = 0;
+                newState.elementIndex = elem.next;
+                const subResults = this.transition(newState, trueVars, log);
+                if (subResults.length > 0) {
+                    results.push(...subResults);
+                }
+                // If subResults is empty, the chain couldn't progress - don't add wait state
+                log(`${elem.varName} not matched, min satisfied, advancing`);
+            } else {
+                log(`${elem.varName} not matched, count=${count}<min=${elem.min}, DEAD`);
+            }
+        }
+    }
+
+    transitionAlt(state, elem, trueVars, log, results) {
+        let anyMatched = false;
+
+        let altIdx = elem.next;
+        while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
+            const altElem = this.pattern.elements[altIdx];
+            const altState = state.clone();
+            altState.elementIndex = altIdx;
+
+            const subResults = this.transition(altState, trueVars, log);
+            if (subResults.length > 0) {
+                anyMatched = true;
+                results.push(...subResults);
+            }
+
+            altIdx = altElem ? altElem.jump : -1;
+        }
+
+        if (!anyMatched) {
+            const endElem = this.findGroupEnd(elem);
+            if (endElem) {
+                const count = state.counts[endElem.depth] || 0;
+                if (count >= endElem.min) {
+                    const exitState = state.clone();
+                    exitState.counts[endElem.depth] = 0;
+                    exitState.elementIndex = endElem.next;
+                    const subResults = this.transition(exitState, trueVars, log);
+                    if (subResults.length > 0) {
+                        results.push(...subResults);
+                    } else {
+                        results.push(exitState);
+                    }
+                    log(`No alternative matched, min=${endElem.min} satisfied, exiting group`);
+                }
+            }
+        }
+    }
+
+    transitionGroupEnd(state, elem, log, results) {
+        const count = (state.counts[elem.depth] || 0) + 1;
+
+        if (count < elem.min) {
+            const repeatState = state.clone();
+            repeatState.counts[elem.depth] = count;
+            this.resetInnerCounts(repeatState, elem.depth);
+            repeatState.elementIndex = elem.jump;
+            results.push(repeatState);
+            log(`Group end: count=${count}<min=${elem.min}, must repeat`);
+        } else if (count < elem.max) {
+            const repeatState = state.clone();
+            repeatState.counts[elem.depth] = count;
+            this.resetInnerCounts(repeatState, elem.depth);
+            repeatState.elementIndex = elem.jump;
+            results.push(repeatState);
+
+            const exitState = state.clone();
+            exitState.counts[elem.depth] = 0;
+            exitState.elementIndex = elem.next;
+            results.push(exitState);
+            log(`Group end: count=${count}, FORK`);
+        } else {
+            const exitState = state.clone();
+            exitState.counts[elem.depth] = 0;
+            exitState.elementIndex = elem.next;
+            results.push(exitState);
+            log(`Group end: count=${count}=max, exiting`);
+        }
+    }
+
+    expandToWaitPositions(states) {
+        const result = [];
+        const seen = new Map();
+        const queue = [...states];
+
+        while (queue.length > 0) {
+            const state = queue.shift();
+            const hash = state.hash();
+
+            if (seen.has(hash)) {
+                seen.get(hash).mergePaths(state);
+                continue;
+            }
+            seen.set(hash, state);
+
+            if (state.elementIndex === -1) {
+                result.push(state);
+                continue;
+            }
+
+            const elem = this.pattern.elements[state.elementIndex];
+            if (!elem) {
+                const fin = state.clone();
+                fin.elementIndex = -1;
+                result.push(fin);
+                continue;
+            }
+
+            if (elem.isFinish()) {
+                const fin = state.clone();
+                fin.elementIndex = -1;
+                result.push(fin);
+            } else if (elem.isVar()) {
+                result.push(state);
+
+                const count = state.counts[elem.depth] || 0;
+                if (count >= elem.min) {
+                    const skip = state.clone();
+                    skip.counts[elem.depth] = 0;
+                    skip.elementIndex = elem.next;
+                    queue.push(skip);
+                }
+            } else if (elem.isAltStart()) {
+                result.push(state);
+
+                const endElem = this.findGroupEnd(elem);
+                if (endElem) {
+                    const count = state.counts[endElem.depth] || 0;
+                    if (count >= endElem.min) {
+                        const skip = state.clone();
+                        skip.counts[endElem.depth] = 0;
+                        skip.elementIndex = endElem.next;
+                        queue.push(skip);
+                    }
+                }
+            } else if (elem.isGroupEnd()) {
+                const count = (state.counts[elem.depth] || 0) + 1;
+
+                if (count < elem.min) {
+                    const repeat = state.clone();
+                    repeat.counts[elem.depth] = count;
+                    this.resetInnerCounts(repeat, elem.depth);
+                    repeat.elementIndex = elem.jump;
+                    queue.push(repeat);
+                } else if (count < elem.max) {
+                    const repeat = state.clone();
+                    repeat.counts[elem.depth] = count;
+                    this.resetInnerCounts(repeat, elem.depth);
+                    repeat.elementIndex = elem.jump;
+                    queue.push(repeat);
+
+                    const exit = state.clone();
+                    exit.counts[elem.depth] = 0;
+                    exit.elementIndex = elem.next;
+                    queue.push(exit);
+                } else {
+                    const exit = state.clone();
+                    exit.counts[elem.depth] = 0;
+                    exit.elementIndex = elem.next;
+                    queue.push(exit);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    mergeStates(states, stateMerges, ctxId) {
+        const merged = new Map();
+        for (const state of states) {
+            const hash = state.hash();
+            if (merged.has(hash)) {
+                merged.get(hash).mergePaths(state);
+            } else {
+                merged.set(hash, state);
+            }
+        }
+        return Array.from(merged.values());
+    }
+
+    findGroupEnd(altElem) {
+        let idx = altElem.next;
+        while (idx >= 0 && idx < this.pattern.elements.length) {
+            const elem = this.pattern.elements[idx];
+            if (elem.isGroupEnd()) return elem;
+            idx = elem.next;
+        }
+        return null;
+    }
+
+    resetInnerCounts(state, depth) {
+        for (let d = depth + 1; d < state.counts.length; d++) {
+            state.counts[d] = 0;
+        }
+    }
+
+    filterNonViableStates(states, trueVars) {
+        return states.filter(state => {
+            if (state.elementIndex === -1) return true;
+
+            const elem = this.pattern.elements[state.elementIndex];
+            if (!elem) return true;
+
+            if (elem.isAltStart()) {
+                const canMatch = this.canAltMatch(elem, trueVars);
+                if (canMatch) return true;
+
+                const endElem = this.findGroupEnd(elem);
+                if (endElem) {
+                    const count = state.counts[endElem.depth] || 0;
+                    return count >= endElem.min;
+                }
+                return false;
+            } else if (elem.isVar()) {
+                if (trueVars.includes(elem.varName)) return true;
+
+                const count = state.counts[elem.depth] || 0;
+                return count >= elem.min;
+            }
+
+            return true;
+        });
+    }
+
+    canAltMatch(altElem, trueVars) {
+        let altIdx = altElem.next;
+        while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
+            const elem = this.pattern.elements[altIdx];
+            if (elem && elem.isVar() && trueVars.includes(elem.varName)) {
+                return true;
+            }
+            altIdx = elem ? elem.jump : -1;
+        }
+        return false;
+    }
+
+    absorbContexts(log) {
+        const absorptions = [];
+        if (this.contexts.length <= 1) return absorptions;
+
+        this.contexts.sort((a, b) => a.matchStart - b.matchStart);
+        const absorbed = new Set();
+
+        for (let i = 0; i < this.contexts.length; i++) {
+            if (absorbed.has(i)) continue;
+            const earlier = this.contexts[i];
+            if (earlier.isCompleted) continue;
+
+            for (let j = i + 1; j < this.contexts.length; j++) {
+                if (absorbed.has(j)) continue;
+                const later = this.contexts[j];
+                if (later.isCompleted) continue;
+
+                const canAbsorb = later.states.every(ls =>
+                    earlier.states.some(es => {
+                        if (es.elementIndex !== ls.elementIndex) return false;
+                        const elem = this.pattern.elements[es.elementIndex];
+                        if (!elem) return true;
+                        if (elem.max === Infinity) {
+                            return es.counts.every((c, d) => (c || 0) >= (ls.counts[d] || 0));
+                        }
+                        return es.counts.every((c, d) => (c || 0) === (ls.counts[d] || 0));
+                    })
+                );
+
+                if (canAbsorb && later.states.length > 0) {
+                    absorbed.add(j);
+                    absorptions.push({
+                        absorbedId: later.id,
+                        byId: earlier.id,
+                        states: later.states.map(s => ({
+                            elementIndex: s.elementIndex,
+                            counts: [...s.counts],
+                            matchedPaths: s.matchedPaths.map(p => [...p])
+                        }))
+                    });
+                    log(`Context #${later.id} absorbed by #${earlier.id}`, 'warning');
+                }
+            }
+        }
+
+        this.contexts = this.contexts.filter((_, i) => !absorbed.has(i));
+        return absorptions;
+    }
+
+    getStartStates(trueVars, log = () => {}) {
+        if (this.pattern.elements.length === 0) return [];
+        const initCounts = new Array(this.pattern.maxDepth + 1).fill(0);
+        const initState = new MatchState(0, initCounts);
+        const waitStates = this.expandToWaitPositions([initState]);
+
+        const valid = [];
+        for (const state of waitStates) {
+            if (state.elementIndex === -1) continue;
+            const elem = this.pattern.elements[state.elementIndex];
+            if (!elem) continue;
+            if (elem.isVar() && trueVars.includes(elem.varName)) {
+                valid.push(state);
+            } else if (elem.isAltStart()) {
+                let altIdx = elem.next;
+                while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
+                    const altElem = this.pattern.elements[altIdx];
+                    if (altElem && altElem.isVar() && trueVars.includes(altElem.varName)) {
+                        const altState = state.clone();
+                        altState.elementIndex = altIdx;
+                        valid.push(altState);
+                    }
+                    altIdx = altElem ? altElem.jump : -1;
+                }
+            }
+        }
+        return valid;
+    }
+}
+
+// ============== UI ==============
+
+let currentPattern = null;
+let executor = null;
+
+function applyPattern() {
+    const patternStr = document.getElementById('patternInput').value.trim();
+    if (!patternStr) return;
+
+    try {
+        const variables = new Set();
+        const tokens = tokenize(patternStr);
+        let pos = { value: 0 };
+        const ast = parseSequence(tokens, pos, variables);
+        document.getElementById('optimizedPattern').textContent = astToString(ast);
+
+        currentPattern = parsePatternAST(patternStr);
+        executor = new NFAExecutor(currentPattern);
+        document.getElementById('parseError').textContent = '';
+        document.getElementById('variablesDisplay').textContent = currentPattern.variables.join(', ');
+        document.getElementById('rowCounter').textContent = '0';
+        renderPatternDisplay();
+        renderHistory();
+        renderCurrentState();
+        document.getElementById('rowInput').focus();
+    } catch (e) {
+        document.getElementById('parseError').textContent = 'Parse error: ' + e.message;
+    }
+}
+
+function loadExample(pattern) {
+    document.getElementById('patternInput').value = pattern;
+    applyPattern();
+}
+
+function applyOptimization(type) {
+    const patternStr = document.getElementById('patternInput').value.trim();
+    if (!patternStr) return;
+
+    try {
+        const variables = new Set();
+        const tokens = tokenize(patternStr);
+        let pos = { value: 0 };
+        let ast = parseSequence(tokens, pos, variables);
+
+        switch(type) {
+            case 'reset':
+                break;
+            case 'unwrap':
+                ast = unwrapGroups(ast);
+                break;
+            case 'removeDup':
+                ast = removeDuplicates(ast);
+                break;
+            case 'optimizeQuant':
+                ast = optimizeQuantifiers(ast);
+                break;
+            case 'all':
+                ast = optimizeAST(ast);
+                break;
+        }
+
+        const optimizedStr = astToString(ast);
+        document.getElementById('optimizedPattern').textContent = optimizedStr;
+
+        const pattern = astToPattern(ast, variables);
+        currentPattern = pattern;
+        executor = new NFAExecutor(currentPattern);
+
+        document.getElementById('parseError').textContent = '';
+        document.getElementById('variablesDisplay').textContent = currentPattern.variables.join(', ');
+        document.getElementById('rowCounter').textContent = '0';
+        renderPatternDisplay();
+        renderHistory();
+        renderCurrentState();
+    } catch (e) {
+        document.getElementById('parseError').textContent = 'Optimization error: ' + e.message;
+    }
+
+    document.getElementById('rowInput').focus();
+}
+
+function resetAll() {
+    if (executor) executor.reset();
+    document.getElementById('rowCounter').textContent = '0';
+    renderPatternDisplay();
+    renderHistory();
+    renderCurrentState();
+    document.getElementById('rowInput').value = '';
+    document.getElementById('rowInput').focus();
+}
+
+function clearHistory() {
+    if (executor) executor.reset();
+    document.getElementById('rowCounter').textContent = '0';
+    renderPatternDisplay();
+    renderHistory();
+    renderCurrentState();
+}
+
+function renderPatternDisplay() {
+    const container = document.getElementById('patternDisplay');
+    if (!currentPattern || currentPattern.elements.length === 0) {
+        container.innerHTML = '<span style="color: #666;">Apply a pattern to see structure</span>';
+        return;
+    }
+
+    const activeElements = new Set();
+    if (executor) {
+        for (const ctx of executor.contexts) {
+            for (const state of ctx.states) {
+                if (state.elementIndex >= 0) {
+                    activeElements.add(state.elementIndex);
+                }
+            }
+        }
+    }
+
+    let html = '<table class="pattern-table"><thead><tr>';
+    html += '<th>idx</th><th>var</th><th>vIdx</th><th>depth</th><th>min</th><th>max</th><th>next</th><th>jump</th>';
+    html += '</tr></thead><tbody>';
+
+    for (let i = 0; i < currentPattern.elements.length; i++) {
+        const elem = currentPattern.elements[i];
+        const isActive = activeElements.has(i);
+
+        let rowClass = '';
+        if (isActive) rowClass = 'active';
+        else if (elem.isGroupEnd()) rowClass = 'group-end';
+        else if (elem.isAltStart()) rowClass = 'alternation';
+
+        const maxStr = elem.max === Infinity ? '∞' : elem.max;
+        const varIdxStr = elem.varIndex;
+
+        html += `<tr>`;
+        html += `<td class="${rowClass}">[${i}]</td>`;
+        html += `<td class="${rowClass}">${elem.varName}</td>`;
+        html += `<td class="${rowClass}">${varIdxStr}</td>`;
+        html += `<td class="${rowClass}">${elem.depth}</td>`;
+        html += `<td class="${rowClass}">${elem.min}</td>`;
+        html += `<td class="${rowClass}">${maxStr}</td>`;
+        html += `<td class="${rowClass}">${elem.next}</td>`;
+        html += `<td class="${rowClass}">${elem.jump >= 0 ? elem.jump : '-'}</td>`;
+        html += '</tr>';
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function renderHistory() {
+    const container = document.getElementById('historyList');
+
+    if (!executor || executor.history.length === 0) {
+        container.innerHTML = '<div class="no-context">Enter rows to see state changes...</div>';
+        return;
+    }
+
+    let html = '';
+
+    for (let i = executor.history.length - 1; i >= 0; i--) {
+        const entry = executor.history[i];
+        const hasMatch = entry.contexts.some(ctx => ctx.isCompleted);
+
+        html += `<div class="history-row ${hasMatch ? 'match-complete' : ''}">`;
+        html += `<div class="history-row-header">
+            <span class="row-num ${hasMatch ? 'match' : ''}">Row ${entry.row}</span>
+            <span class="row-input-display">
+                ${entry.input.length > 0
+                    ? entry.input.map(v => `<span class="true-var">${v}</span>`).join(' ')
+                    : '<span style="color:#666;">∅ (none true)</span>'}
+            </span>
+        </div>`;
+
+        html += '<div class="history-row-body">';
+
+        // Show absorptions
+        if (entry.absorptions && entry.absorptions.length > 0) {
+            for (const abs of entry.absorptions) {
+                html += `<div class="context-block" style="border-left-color: #e94560; opacity: 0.7;">`;
+                html += `<div class="context-header">
+                    <span class="context-title" style="color: #e94560;">#${abs.absorbedId}: absorbed by #${abs.byId}</span>
+                </div>`;
+                if (abs.states && abs.states.length > 0) {
+                    html += '<div class="state-list">';
+                    const groups = new Map();
+                    for (const s of abs.states) {
+                        const elemIdx = s.elementIndex;
+                        const countsStr = s.counts ? s.counts.join(',') : '';
+                        const key = `${elemIdx}:${countsStr}`;
+                        if (!groups.has(key)) {
+                            groups.set(key, { elemIdx, counts: s.counts, paths: [] });
+                        }
+                        for (const path of s.matchedPaths) {
+                            groups.get(key).paths.push(path);
+                        }
+                    }
+                    for (const [key, group] of groups) {
+                        const elem = currentPattern.elements[group.elemIdx];
+                        if (!elem) continue;
+                        const countsStr = group.counts ? `[${group.counts.join(',')}]` : '';
+                        const stateInfo = `[${group.elemIdx}:${elem.varName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
+                        html += `<div style="color: #e94560; font-weight: bold;">state: ${stateInfo}</div>`;
+                        for (const path of group.paths) {
+                            html += `<div style="padding-left: 12px; color: #aaa;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+        }
+
+        if (hasMatch) {
+            const completedCtx = entry.contexts.find(ctx => ctx.isCompleted);
+            html += `<div class="match-banner">MATCH FOUND: Row ${completedCtx.matchStart} → Row ${completedCtx.matchEnd}</div>`;
+        }
+
+        if (entry.contexts.length === 0) {
+            // Show orphan dead states (context died completely)
+            const orphanDeadStates = entry.deadStates || [];
+            if (orphanDeadStates.length > 0) {
+                const byContext = new Map();
+                for (const ds of orphanDeadStates) {
+                    const cid = ds.contextId;
+                    if (!byContext.has(cid)) byContext.set(cid, []);
+                    byContext.get(cid).push(ds);
+                }
+                for (const [contextId, deadStates] of byContext) {
+                    html += `<div class="context-block" style="border-color: #e94560; opacity: 0.7;">`;
+                    html += `<div class="context-header">
+                        <span class="context-title" style="color: #e94560;">#${contextId}: dead</span>
+                    </div>`;
+                    html += '<div class="state-list">';
+                    for (const ds of deadStates) {
+                        const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
+                        const elem = currentPattern.elements[ds.elementIndex];
+                        const elemName = elem ? elem.varName : '?';
+                        const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
+                        html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
+                        for (const path of ds.matchedPaths) {
+                            html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                    html += '</div></div>';
+                }
+            } else {
+                html += '<div style="color: #888; font-size: 12px;">No active contexts</div>';
+            }
+        } else {
+            for (const ctx of entry.contexts) {
+                const isCompleted = ctx.isCompleted;
+                const isDead = ctx.isDead || (ctx.states && ctx.states.length === 0 && !isCompleted);
+                const hasCompletedPaths = ctx.completedPaths && ctx.completedPaths.length > 0;
+                const isPotentialMatch = !isCompleted && !isDead && ctx.matchEnd >= 0 && hasCompletedPaths;
+                const isActive = ctx.states && ctx.states.length > 0 && !isCompleted;
+
+                let statusClass = '';
+                let statusText = '';
+                if (isCompleted) {
+                    statusClass = 'completed';
+                    statusText = `matched (rows ${ctx.matchStart}-${ctx.matchEnd})`;
+                } else if (isDead) {
+                    statusClass = '';
+                    statusText = 'dead';
+                } else if (isPotentialMatch) {
+                    statusClass = 'potential';
+                    statusText = `active (potential: rows ${ctx.matchStart}-${ctx.matchEnd})`;
+                } else {
+                    statusText = 'active';
+                }
+
+                const blockStyle = isDead ? 'border-left-color: #e94560; opacity: 0.8;' : '';
+                html += `<div class="context-block ${statusClass}" style="${blockStyle}">`;
+                html += `<div class="context-header">
+                    <span class="context-title ${statusClass}" style="${isDead ? 'color: #e94560;' : ''}">#${ctx.id}: ${statusText}</span>
+                </div>`;
+
+                if (isActive && !isCompleted) {
+                    html += '<div class="state-list">';
+
+                    // Show preserved completions (potential fallback) at top
+                    if (hasCompletedPaths) {
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; background: #0a1a0a; border-left: 3px solid #00ff88;">`;
+                        html += `<div style="color: #00ff88; font-weight: bold;">preserved completion (fallback):</div>`;
+                        const completedPaths = ctx.completedPaths;
+                        for (const path of completedPaths) {
+                            const pathVars = path.slice(1); // path[0] is ID
+                            html += `<div style="padding-left: 12px; color: #00ff88;">${pathVars.join(' ')} ✓</div>`;
+                        }
+                        html += `</div>`;
+                    }
+
+                    const ctxMerges = (entry.stateMerges || []).filter(m => m.contextId === ctx.id);
+
+                    for (const merge of ctxMerges) {
+                        const elemIdx = merge.elementIndex;
+                        const elem = currentPattern.elements[elemIdx];
+                        if (!elem) continue;
+                        const countsStr = merge.counts ? `[${merge.counts.join(',')}]` : '';
+                        const stateInfo = `[${elemIdx}:${elem.varName}] ${countsStr}`;
+                        for (const path of merge.absorbedPaths) {
+                            const pathStr = path.join(' ') || '∅';
+                            html += `<div class="state-item" style="background: #2a2000; border-left: 3px solid #ffd700;">
+                                <span class="state-elem" style="color: #ffd700;">state(merged): ${pathStr} → ${stateInfo}</span>
+                            </div>`;
+                        }
+                    }
+
+                    const groups = new Map();
+                    for (const s of ctx.states) {
+                        const elemIdx = s.elementIndex;
+                        const countsStr = s.counts ? s.counts.join(',') : '';
+                        const key = `${elemIdx}:${countsStr}`;
+                        if (!groups.has(key)) {
+                            groups.set(key, { elemIdx, counts: s.counts, paths: [] });
+                        }
+                        for (const path of s.matchedPaths) {
+                            groups.get(key).paths.push(path);
+                        }
+                    }
+
+                    for (const [key, group] of groups) {
+                        const elem = currentPattern.elements[group.elemIdx];
+                        if (!elem) continue;
+                        const countsStr = group.counts ? `[${group.counts.join(',')}]` : '';
+                        const stateInfo = `[${group.elemIdx}:${elem.varName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
+                        html += `<div style="color: #00d9ff; font-weight: bold;">state: ${stateInfo}</div>`;
+                        for (const path of group.paths) {
+                            html += `<div style="padding-left: 12px; color: #aaa;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+
+                    const ctxDeadStates = (entry.deadStates || []).filter(ds => ds.contextId === ctx.id);
+                    for (const ds of ctxDeadStates) {
+                        const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
+                        const elem = currentPattern.elements[ds.elementIndex];
+                        const elemName = elem ? elem.varName : '?';
+                        const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.5;">`;
+                        html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
+                        for (const path of ds.matchedPaths) {
+                            html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+
+                    const ctxDiscardedStates = (entry.discardedStates || []).filter(ds => ds.contextId === ctx.id);
+                    for (const ds of ctxDiscardedStates) {
+                        const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
+                        const elem = currentPattern.elements[ds.elementIndex];
+                        const elemName = elem ? elem.varName : '#FIN';
+                        const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.6;">`;
+                        html += `<div style="color: #888; font-weight: bold;">state(discarded): ${stateInfo}</div>`;
+                        for (const path of ds.matchedPaths) {
+                            html += `<div style="padding-left: 12px; color: #666;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                    html += '</div>';
+                }
+
+                // Show dead states for dead context (all states died)
+                if (isDead) {
+                    html += '<div class="state-list">';
+                    const ctxDeadStates = (entry.deadStates || []).filter(ds => ds.contextId === ctx.id);
+                    for (const ds of ctxDeadStates) {
+                        const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
+                        const elem = currentPattern.elements[ds.elementIndex];
+                        const elemName = elem ? elem.varName : '?';
+                        const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
+                        html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
+                        for (const path of ds.matchedPaths) {
+                            html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                    html += '</div>';
+                }
+
+                if (isCompleted && hasCompletedPaths) {
+                    html += '<div class="state-list">';
+                    html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
+                    html += `<div style="color: #00ff88; font-weight: bold;">state: [#FIN]</div>`;
+                    const completedPaths = ctx.completedPaths;
+                    const maxLen = Math.max(...completedPaths.map(p => p.length), 0);
+                    const finalPaths = completedPaths.filter(p => p.length === maxLen);
+                    for (const path of finalPaths) {
+                        const pathVars = path.slice(1);
+                        html += `<div style="padding-left: 12px; color: #00ff88;">${pathVars.join(' ')} ✓</div>`;
+                    }
+                    html += `</div>`;
+
+                    const ctxDeadStates = (entry.deadStates || []).filter(ds => ds.contextId === ctx.id);
+                    for (const ds of ctxDeadStates) {
+                        const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
+                        const elem = currentPattern.elements[ds.elementIndex];
+                        const elemName = elem ? elem.varName : '?';
+                        const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.5;">`;
+                        html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
+                        for (const path of ds.matchedPaths) {
+                            html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+
+                    const ctxDiscardedStates = (entry.discardedStates || []).filter(ds => ds.contextId === ctx.id);
+                    for (const ds of ctxDiscardedStates) {
+                        const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
+                        const elem = currentPattern.elements[ds.elementIndex];
+                        const elemName = elem ? elem.varName : '#FIN';
+                        const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
+
+                        html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.6;">`;
+                        html += `<div style="color: #888; font-weight: bold;">state(discarded): ${stateInfo}</div>`;
+                        for (const path of ds.matchedPaths) {
+                            html += `<div style="padding-left: 12px; color: #666;">${path.join(' ') || '∅'}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                    html += '</div>';
+                }
+
+                html += '</div>';
+            }
+        }
+
+        html += '</div></div>';
+    }
+
+    container.innerHTML = html;
+}
+
+function renderCurrentState() {
+    const container = document.getElementById('currentContexts');
+
+    if (!executor) {
+        container.innerHTML = '<span style="color:#666;">Apply a pattern first</span>';
+        return;
+    }
+
+    if (executor.contexts.length === 0) {
+        const rowInfo = executor.currentRow >= 0
+            ? `<div style="color:#666;font-size:11px;margin-top:5px;">After row ${executor.currentRow}: waiting for new match start</div>`
+            : '';
+        container.innerHTML = `<span style="color:#888;">No active contexts</span>${rowInfo}`;
+        return;
+    }
+
+    let html = `<div style="color:#888;margin-bottom:10px;">${executor.contexts.length} active context(s)</div>`;
+
+    for (const ctx of executor.contexts) {
+        html += `<div class="context-block ${ctx.isCompleted ? 'completed' : ''}">`;
+        html += `<div class="context-header">
+            <span class="context-title">#${ctx.id}: active</span>
+            <span class="context-range">${ctx.states.length} states</span>
+        </div>`;
+
+        if (ctx.states.length > 0) {
+            html += '<div class="state-list">';
+            const groups = new Map();
+            for (const state of ctx.states) {
+                const elemIdx = state.elementIndex;
+                const countsStr = state.counts ? state.counts.join(',') : '';
+                const key = `${elemIdx}:${countsStr}`;
+                if (!groups.has(key)) {
+                    groups.set(key, { elemIdx, counts: state.counts, paths: [] });
+                }
+                for (const path of state.matchedPaths) {
+                    groups.get(key).paths.push(path);
+                }
+            }
+            for (const [key, group] of groups) {
+                const elem = currentPattern.elements[group.elemIdx];
+                if (!elem) continue;
+                const countsStr = group.counts ? `[${group.counts.join(',')}]` : '';
+                const stateInfo = `[${group.elemIdx}:${elem.varName}] ${countsStr}`;
+
+                html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
+                html += `<div style="color: #00d9ff; font-weight: bold;">state: ${stateInfo}</div>`;
+                for (const path of group.paths) {
+                    html += `<div style="padding-left: 12px; color: #aaa;">${path.join(' ') || '∅'}</div>`;
+                }
+                html += `</div>`;
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
+}
+
+document.getElementById('rowInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        if (!executor) applyPattern();
+
+        const input = this.value.trim().toUpperCase();
+        const trueVars = input ? input.split(/\s+/).filter(v => v) : [];
+
+        executor.processRow(trueVars);
+
+        document.getElementById('rowCounter').textContent = executor.currentRow + 1;
+        renderPatternDisplay();
+        renderHistory();
+        renderCurrentState();
+
+        this.value = '';
+    }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    applyPattern();
+});
+    </script>
+</body>
+</html>

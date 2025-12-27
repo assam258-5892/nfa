@@ -1,0 +1,730 @@
+========================================================================
+                      NFA Executor 설계 문서
+========================================================================
+
+개요
+------------------------------------------------------------------------
+다중 Context 관리와 실행 흐름을 다룹니다.
+"여러 매칭이 어떻게 공존하는가"에 집중합니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                     RPR 매칭 모드 (3개 축)                           │
+├──────────────────────────────────────────────────────────────────────┤
+│  [축 1] 출력 행 수: ONE ROW / ALL ROWS       ← 본 문서 (2절)        │
+│  [축 2] 수량자 탐욕성: GREEDY / RELUCTANT                            │
+│  [축 3] SKIP 옵션: PAST LAST / TO NEXT       ← 본 문서 (6절)        │
+└──────────────────────────────────────────────────────────────────────┘
+
+본 문서는 축 1 (출력 행 수)과 축 3 (SKIP 옵션)을 상세히 다룹니다.
+축 2 (수량자 탐욕성)는 단일 Context 내부 동작으로, 별도 설계가 필요합니다.
+
+
+========================================================================
+1. 자료구조
+========================================================================
+
+1.1 NFAExecutor (실행 엔진)
+------------------------------------------------------------------------
+메인 실행 엔진입니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                          NFAExecutor                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│ pattern: Pattern              // 컴파일된 패턴 (parser.js)           │
+│ contexts: MatchContext[]      // 활성 Context들 (생성 순서 유지)     │
+│ completedContexts: Context[]  // 완료 Context들 (start 순 정렬)      │
+│ skipMode: enum                // PAST_LAST / TO_NEXT                 │
+│ currentRow: number            // 현재 처리 중인 행 번호              │
+│ history: array                // 행별 실행 스냅샷 (디버깅용)         │
+└──────────────────────────────────────────────────────────────────────┘
+
+주요 메서드:
+  - reset()                  : 상태 초기화
+  - processRow(trueVars)     : 한 행 처리
+  - getStartStates(trueVars) : 시작 가능한 상태 반환
+
+
+========================================================================
+2. RPR 매칭 모드
+========================================================================
+
+SQL MATCH_RECOGNIZE는 여러 축의 옵션을 제공합니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                        RPR 매칭 모드 매트릭스                        │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  [축 1] 출력 행 수                                                   │
+│  ├─ ONE ROW PER MATCH (기본값)                                       │
+│  │   → 매칭당 1개 행만 출력                                          │
+│  │   → CLASSIFIER는 최종 결과 1개만 필요                             │
+│  │                                                                   │
+│  └─ ALL ROWS PER MATCH                                               │
+│      → 매칭에 포함된 모든 행 출력                                    │
+│      → 각 행마다 RUNNING/FINAL 시맨틱스 적용                         │
+│                                                                      │
+│  [축 2] 수량자 탐욕성 (별도 설계)                                    │
+│  ├─ GREEDY (기본값): 최장 우선, 폴백 지원                            │
+│  └─ RELUCTANT: 최단 우선, 폴백 없음                                  │
+│                                                                      │
+│  [축 3] SKIP 옵션 (다음 매칭 시작점)                                 │
+│  ├─ SKIP PAST LAST ROW (기본값)                                      │
+│  │   → 매칭 완료 후 마지막 행 다음부터 시작                          │
+│  │   → 중첩 매칭 불가                                                │
+│  │   → Context가 한 번에 하나만 활성                                 │
+│  │                                                                   │
+│  └─ SKIP TO NEXT ROW                                                 │
+│      → 매 행마다 새 Context 시작 가능                                │
+│      → 중첩 매칭 허용                                                │
+│      → 여러 Context 동시 활성                                        │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+========================================================================
+3. 아키텍처
+========================================================================
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                             NFAExecutor                              │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│ ┌──────────────────┐  ┌────────────────────┐  ┌────────────────────┐ │
+│ │     Pattern      │─▶│    processRow()    │─▶│      Contexts      │ │
+│ │     (parser)     │  │                    │  │   [MatchContext]   │ │
+│ └──────────────────┘  └──────────┬─────────┘  └────────────────────┘ │
+│                                  │                                   │
+│          ┌───────────────────────┼──────────────────────┐            │
+│          ▼                       ▼                      ▼            │
+│ ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐ │
+│ │ tryStartNewContext │ │  processContext    │ │  absorbContexts    │ │
+│ │        ()          │ │        ()          │ │        ()          │ │
+│ └─────────┬──────────┘ └─────────┬──────────┘ └────────────────────┘ │
+│           │                      │                                   │
+│           │                      ▼                                   │
+│           │        ┌────────────────────────────┐                    │
+│           └───────▶│  Context 내부 State 전이   │                    │
+│                    │  (transition, mergeStates) │                    │
+│                    └────────────────────────────┘                    │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+========================================================================
+4. 실행 흐름
+========================================================================
+
+4.1 processRow(trueVars)
+------------------------------------------------------------------------
+한 행 처리의 메인 함수입니다.
+
+FUNCTION processRow(trueVars):
+    currentRow++
+
+    # 1. 새 Context 시도
+    tryStartNewContext(row, trueVars)
+
+    # 2. 기존 Context 처리
+    FOR ctx IN contexts:
+        IF ctx.isCompleted OR ctx.matchStart == row:
+            CONTINUE
+        processContext(ctx, row, trueVars)
+
+    # 3. Context 흡수
+    absorbContexts()
+
+    # 4. History 스냅샷 저장 (UI/디버깅용, 생략 가능)
+    history.push(snapshot)
+
+    # 5. 사망/완료 Context 제거
+    contexts = contexts.filter(alive AND NOT completed)
+END FUNCTION
+
+
+4.2 tryStartNewContext(row, trueVars)
+------------------------------------------------------------------------
+새 매치 시작을 시도합니다.
+
+FUNCTION tryStartNewContext(row, trueVars):
+    # 초기 상태 생성
+    initState = new MatchState(0, [0,...])
+
+    # 대기 위치로 확장
+    waitStates = expandToWaitPositions([initState])
+
+    # 입력 소비 가능한 상태 필터
+    consumableStates = []
+    FOR state IN waitStates:
+        elem = pattern.elements[state.elementIndex]
+        IF elem.isVar() AND elem.varName IN trueVars:
+            consumableStates.push(state)
+        ELSE IF elem.isAltStart():
+            # 각 대안 검사
+            FOR altElem IN alternatives(elem):
+                IF altElem.varName IN trueVars:
+                    altState = state.clone()
+                    altState.elementIndex = altElem.index
+                    consumableStates.push(altState)
+
+    IF consumableStates.length == 0:
+        RETURN  # 매칭 시작 불가
+
+    # 새 Context 생성 및 입력 소비
+    ctx = new MatchContext(row)
+    (activeStates, completedStates) = consumeInput(consumableStates, trueVars)
+
+    # 대기 위치로 확장
+    nextWaitStates = expandToWaitPositions(activeStates)
+
+    # 완료/활성 분리
+    FOR state IN nextWaitStates:
+        IF state.elementIndex == -1:
+            completedStates.add(state)
+        ELSE:
+            ctx.states.push(state)
+
+    # 중복 상태 병합 및 완료 경로 추출
+    ctx.states = mergeStates(ctx.states)
+    FOR state IN completedStates:
+        ctx.addCompletedPath(state.summaries)
+
+    contexts.push(ctx)
+END FUNCTION
+
+
+4.3 processContext(ctx, row, trueVars)
+------------------------------------------------------------------------
+기존 Context를 처리합니다.
+
+FUNCTION processContext(ctx, row, trueVars):
+    # 입력 소비
+    (activeStates, completedStates, deadStates) =
+        consumeInput(ctx.states, trueVars)
+
+    # 대기 위치로 확장
+    nextWaitStates = expandToWaitPositions(activeStates)
+
+    # 완료/활성 분리
+    ctx.states = []
+    FOR state IN nextWaitStates:
+        IF state.elementIndex == -1:
+            completedStates.add(state)
+        ELSE:
+            ctx.states.push(state)
+
+    # 중복 상태 병합
+    ctx.states = mergeStates(ctx.states)
+
+    # Greedy: 더 진행 가능하면 짧은 매치 폐기
+    IF completedStates.size > 0 AND ctx.states.length > 0:
+        canProgress = ctx.states.some(canConsumeInput)
+        IF canProgress:
+            discard(completedStates)  # 짧은 매치 폐기
+        ELSE:
+            ctx.addCompletedPaths(completedStates)
+    ELSE:
+        ctx.addCompletedPaths(completedStates)
+
+    # 완료 검사
+    IF ctx.states.length == 0:
+        IF ctx.completedPaths.length > 0:
+            ctx.isCompleted = true
+        # ELSE: Context 사망
+END FUNCTION
+
+
+========================================================================
+5. Context 흡수
+========================================================================
+
+5.1 흡수 조건
+------------------------------------------------------------------------
+
+  - 조건: 패턴의 첫번째 매칭이 Greedy (max=∞ AND reluctant=false)
+          (동일 elementIndex AND 선발.counts >= 후발.counts)
+  - 동작: 후발 Context 제거
+  - 결과: 선발이 더 긴 매칭 계속, 중복 계산 방지
+
+
+5.2 absorbContexts()
+------------------------------------------------------------------------
+패턴의 첫번째 매칭이 Greedy일 때만 흡수를 수행합니다.
+
+FUNCTION absorbContexts():
+    IF NOT pattern.firstMatchIsGreedy:
+        RETURN []
+
+    absorptions = []
+    contexts.sort(by matchStart)
+    absorbed = Set()
+
+    FOR i = 0 TO contexts.length:
+        IF absorbed.has(i):
+            CONTINUE
+        earlier = contexts[i]
+
+        FOR j = i+1 TO contexts.length:
+            IF absorbed.has(j):
+                CONTINUE
+            later = contexts[j]
+
+            # later의 모든 상태가 earlier에 포함되는지 검사
+            canAbsorb = later.states.every(ls =>
+                earlier.states.some(es =>
+                    es.elementIndex == ls.elementIndex AND
+                    es.counts >= ls.counts
+                )
+            )
+
+            IF canAbsorb AND later.states.length > 0:
+                absorbed.add(j)
+                absorptions.push({later.id absorbed by earlier.id})
+
+    contexts = contexts.filter(not absorbed)
+    RETURN absorptions
+END FUNCTION
+
+
+5.3 흡수 예제
+------------------------------------------------------------------------
+
+패턴: A+  (첫번째 매칭이 Greedy, max=∞)
+입력: [A], [A], [A]
+
+행 0: Context #0 시작, State(elemIdx=0, counts=[1])
+행 1: Context #1 시작, State(elemIdx=0, counts=[1])
+       Context #0 진행, State(elemIdx=0, counts=[2])
+
+       흡수 검사:
+         - 패턴의 첫번째 매칭이 Greedy (max=∞) ✓
+         - 동일 elementIndex=0 ✓
+         - 선발.counts=[2] >= 후발.counts=[1] ✓
+
+       Context #1 흡수됨
+
+행 2: Context #0만 진행
+
+
+========================================================================
+6. SKIP 모드
+========================================================================
+
+6.1 개요
+------------------------------------------------------------------------
+
+SKIP 모드는 매칭 완료 후 다음 매칭 시작점을 결정합니다.
+
+  ┌─────────────────────┬───────────────────────────────────────────┐
+  │ 모드                │ 다음 시작점                               │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ SKIP PAST LAST ROW  │ end + 1 (완료 후 다음 행)                 │
+  │ SKIP TO NEXT ROW    │ start + 1 (시작 후 다음 행)               │
+  └─────────────────────┴───────────────────────────────────────────┘
+
+
+6.2 SKIP PAST LAST ROW (기본값)
+------------------------------------------------------------------------
+
+매칭 완료 후, 중첩된 Context들은 폐기됨.
+
+  Match 1: start=0, end=3 → 완료, emit
+  중첩 Context (start=1,2,3) → 폐기 (start <= end)
+  Match 2: start=4         ← 다음 매칭
+
+특징:
+  - 여러 Context 동시 활성 가능 (TO NEXT와 동일)
+  - emit 시 중첩 Context 폐기 (start <= 직전 end)
+  - 결과적으로 중첩 매칭 출력 안 함
+  - 흡수 검사는 동일하게 수행
+
+
+6.3 SKIP TO NEXT ROW
+------------------------------------------------------------------------
+
+매 행마다 새 Context 시작 가능. 중첩 매칭 허용.
+
+  Row 0: Context #0 시작 (start=0)
+  Row 1: Context #0 진행, Context #1 시작 (start=1)
+  Row 2: Context #0 진행, Context #1 진행, Context #2 시작 (start=2)
+  Row 3: Context #0 완료 (end=3)
+         Context #1 완료 (end=3)  ← 중첩
+         Context #2 완료 (end=3)  ← 중첩
+
+결과: 3개 매칭이 동시에 완료될 수 있음.
+
+  Match 1: start=0, end=3
+  Match 2: start=1, end=3  ← 중첩
+  Match 3: start=2, end=3  ← 중첩
+
+특징:
+  - 여러 Context 동시 활성
+  - 중첩 매칭 허용
+  - matchStart가 다르면 흡수 안 함 (별개 매칭)
+  - 출력 순서 관리 필요
+
+
+6.4 Greedy 폴백과 end row
+------------------------------------------------------------------------
+
+Greedy 모드에서 폴백 시, end row가 현재 row보다 훨씬 이전일 수 있음.
+
+  Context start=0:
+    Row 0: 완료 가능 → 보존 (preserved completion)
+    Row 1: 진행 중 (더 긴 매칭 시도)
+    Row 2: 진행 중
+    Row 3: 진행 중
+    Row 4: 사망 → 보존된 완료로 폴백
+
+  결과: start=0, end=0  ← 현재 row(4)보다 4행 이전
+
+폴백 시 end row 결정:
+  - 보존된 완료 상태에 기록된 마지막 매칭 row
+  - 현재 처리 중인 row와 무관
+
+
+========================================================================
+7. 출력 순서 관리 (SKIP TO NEXT ROW)
+========================================================================
+
+7.1 문제점
+------------------------------------------------------------------------
+
+SKIP TO NEXT ROW에서 여러 Context가 동시에 활성화되면:
+  - 늦게 시작한 Context가 먼저 완료될 수 있음
+  - 출력 순서가 시작 순서와 다를 수 있음
+  - 선발 Context의 결과가 후발보다 늦게 나올 수 있음
+
+예:
+  Row 0: Context #0 시작 (start=0)
+  Row 3: Context #1 시작 (start=3)
+  Row 5: Context #1 완료 (end=5)  ← 먼저 완료
+  Row 7: Context #0 폴백 완료 (end=2)
+
+  완료 순서: #1 → #0
+  출력 순서: #0 → #1 (start 순서 유지 필요)
+
+
+7.2 출력 큐 설계
+------------------------------------------------------------------------
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         출력 큐 관리                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  규칙:                                                               │
+│    1. Context는 시작 Row 순서대로 ID 부여                            │
+│    2. 완료된 Context는 출력 큐에 추가 (즉시 출력 X)                  │
+│    3. 출력 조건:                                                     │
+│       - 자신보다 앞선 Context가 모두 완료/폐기됨                     │
+│       - 또는 타임아웃 (N rows 동안 진전 없음)                        │
+│    4. 폐기 조건:                                                     │
+│       - Fallback 없이 실패                                           │
+│       - 타임아웃 (preserved completion 있으면 그것 출력)             │
+│                                                                      │
+│  예:                                                                 │
+│    Context #0 완료 → 큐에 추가, 앞선 것 없음 → 즉시 출력             │
+│    Context #1 완료 → 큐에 추가, #0 대기 중 → 대기                    │
+│    Context #0 완료/폐기 → #1 출력 가능                               │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+7.3 타임아웃 정책
+------------------------------------------------------------------------
+
+장기 대기 Context 처리:
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         타임아웃 정책                                │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  조건: N rows 동안 진전 없는 Context                                 │
+│                                                                      │
+│  처리:                                                               │
+│    IF hasPreservedCompletion:                                        │
+│        # 보존된 완료로 강제 종료                                     │
+│        output(preservedCompletion)                                   │
+│        discard(context)                                              │
+│    ELSE:                                                             │
+│        # 매칭 실패로 처리                                            │
+│        discard(context)                                              │
+│                                                                      │
+│  N 값 설정:                                                          │
+│    - 패턴 복잡도에 비례                                              │
+│    - 또는 사용자 설정 가능                                           │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+7.4 중간 출력 유보와 폐기
+------------------------------------------------------------------------
+
+복잡한 패턴에서 발생 가능한 시나리오:
+
+패턴: (A B+ D)+
+입력: [A], [B], [B], [B], [X]
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Row 0: A 매칭 → 완료(A B D) 아직 없음 (D 대기)                 │
+│  Row 1-3: B 반복 매칭                                           │
+│  Row 4: X 입력 → D 기대 실패                                    │
+│                                                                 │
+│  이 경우:                                                       │
+│    - B 매칭 중에는 완료가 아님 (D가 아직 안 왔으니까)           │
+│    - D 없이 전체 패턴 실패                                      │
+│    - 중간에 출력할 것 없음 (완료된 적 없음)                     │
+└─────────────────────────────────────────────────────────────────┘
+
+반복 그룹에서의 폴백:
+
+패턴: (A B+ D)+
+입력: [A], [B], [D], [A], [B], [X]
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Row 0-2: 첫 번째 (A B D) 완료                                  │
+│    - #END에서 반복 vs 탈출 분기                                 │
+│    - Greedy: 반복 선택, 완료(A B D) 보존                        │
+│  Row 3-4: 두 번째 (A B...) 시작                                 │
+│  Row 5: X 입력 → D 기대 실패                                    │
+│    - 미완료 경로 전멸 → 보존된 완료(A B D) 폴백                 │
+│                                                                 │
+│  결과: Row 0-2, 경로 [A B D]                                    │
+└─────────────────────────────────────────────────────────────────┘
+
+
+========================================================================
+8. 디버깅
+========================================================================
+
+8.1 History 구조
+------------------------------------------------------------------------
+
+history[row] = {
+    row,
+    input: [...trueVars],
+    contexts: [
+        {
+            id, matchStart, matchEnd, isCompleted, isDead,
+            completedPaths: [...],
+            states: [{ elementIndex, counts, summaries }, ...]
+        },
+        ...
+    ],
+    absorptions: [{ absorbedId, byId, states }, ...],
+    stateMerges: [...],
+    discardedStates: [...],
+    deadStates: [...],
+    logs: [{ message, type }, ...]
+}
+
+
+8.2 로그 타입
+------------------------------------------------------------------------
+
+  타입      설명
+  --------------------------------------------------------------------
+  info      일반 정보
+  success   성공 (매치 완료, 새 Context)
+  warning   주의 (흡수, 폐기, 잠재적 매치)
+  error     실패 (Context 사망)
+
+
+========================================================================
+9. API 레퍼런스
+========================================================================
+
+9.1 NFAExecutor
+------------------------------------------------------------------------
+
+생성:
+
+  const executor = new NFAExecutor(pattern);
+
+실행:
+
+  executor.reset();
+  for (const trueVars of rows) {
+      const result = executor.processRow(trueVars);
+      // result.contexts, result.logs, ...
+  }
+
+상태 확인:
+
+  executor.contexts      // 활성 Context 목록
+  executor.history       // 실행 히스토리
+
+
+========================================================================
+10. C 포팅 고려사항
+========================================================================
+
+10.1 데이터 구조 매핑
+------------------------------------------------------------------------
+
+  JS                    C 대응
+  ----------------------------------------------------------
+  NFAExecutor           struct NFAExecutor + 함수들
+  MatchContext[]        고정 크기 배열
+  history[]             링 버퍼 또는 고정 크기
+
+
+10.2 구조체 예시
+------------------------------------------------------------------------
+
+// 단일 경로
+typedef struct {
+    var_index_t* vars;             // 동적 배열
+    int length;
+    int capacity;
+} Path;
+
+// 단일 Summary (aggregates + paths)
+typedef struct {
+    Path* paths;                   // 동적 배열
+    int path_count;
+    int path_capacity;
+} Summary;
+
+// 단일 State
+typedef struct {
+    int16_t element_index;         // -1 = 완료
+    uint16_t* counts;              // 동적 배열 (길이: maxDepth)
+    int counts_len;
+    Summary* summaries;            // 동적 배열
+    int summary_count;
+    int summary_capacity;
+} MatchState;
+
+// 단일 Context
+typedef struct {
+    int id;
+    int match_start;
+    int match_end;
+    bool is_completed;
+    MatchState* states;            // 동적 배열
+    int state_count;
+    int state_capacity;
+    MatchState* matched_state;     // Greedy 폴백용 보존 (nullable)
+} MatchContext;
+
+// 실행 엔진
+typedef struct {
+    Pattern* pattern;
+    MatchContext* contexts;        // 동적 배열
+    int context_count;
+    int context_capacity;
+    int current_row;
+} NFAExecutor;
+
+
+10.3 Context 풀 관리
+------------------------------------------------------------------------
+
+Context 생성/제거가 빈번하므로 풀 관리:
+
+typedef struct {
+    MatchContext pool[MAX_CONTEXTS];
+    bool in_use[MAX_CONTEXTS];
+    int count;
+} ContextPool;
+
+MatchContext* alloc_context(ContextPool* pool) {
+    for (int i = 0; i < MAX_CONTEXTS; i++) {
+        if (!pool->in_use[i]) {
+            pool->in_use[i] = true;
+            pool->count++;
+            return &pool->pool[i];
+        }
+    }
+    return NULL;
+}
+
+void free_context(ContextPool* pool, MatchContext* ctx) {
+    int idx = ctx - pool->pool;
+    pool->in_use[idx] = false;
+    pool->count--;
+}
+
+
+========================================================================
+11. 구현 상태 및 확장 계획
+========================================================================
+
+11.1 현재 구현 상태
+------------------------------------------------------------------------
+
+  기능                        상태        설명
+  --------------------------------------------------------------------
+  Context 관리                O 구현됨    생성/제거/완료
+  Context 흡수                O 구현됨    중복 Context 제거
+  ONE ROW PER MATCH           O 구현됨    기본 출력 모드
+  SKIP PAST LAST ROW          O 구현됨    기본 SKIP 모드
+  History 추적                O 구현됨    디버깅용
+
+
+11.2 확장 예정
+------------------------------------------------------------------------
+
+  기능                        우선순위    설명
+  --------------------------------------------------------------------
+  ALL ROWS PER MATCH          중간        매칭 내 모든 행 출력
+  RUNNING/FINAL 시맨틱스      중간        ALL ROWS에서 값 계산
+  SKIP TO NEXT ROW            중간        중첩 매칭 허용
+  출력 큐 관리                중간        SKIP TO NEXT ROW용
+  타임아웃 정책               낮음        장기 대기 Context 처리
+  PERMUTE                     낮음        순서 무관 매칭
+  앵커 (^, $)                 낮음        시작/끝 제약
+
+
+11.3 SKIP TO NEXT ROW 구현 가이드
+------------------------------------------------------------------------
+
+주요 변경사항:
+
+1. tryStartNewContext 수정:
+   - 완료된 Context가 있어도 새 Context 시작 허용
+   - 현재: 완료 Context 있으면 새 시작 안 함
+   - 변경: 항상 새 시작 시도
+
+2. 출력 큐 추가:
+   - 완료된 Context를 바로 출력하지 않고 큐에 저장
+   - 앞선 Context 상태에 따라 출력 결정
+
+3. Context ID 관리:
+   - 시작 Row 기준 순차 ID 부여
+   - 출력 순서 결정에 사용
+
+4. 타임아웃 로직:
+   - 진전 없는 Context 추적
+   - N rows 후 강제 완료/폐기
+
+
+11.4 출력 큐 구현 예시
+------------------------------------------------------------------------
+
+typedef struct {
+    int context_id;
+    var_index_t path[MAX_PATH_LEN];
+    int path_len;
+    int match_start;
+    int match_end;
+} OutputEntry;
+
+typedef struct {
+    OutputEntry entries[MAX_OUTPUTS];
+    int count;
+    int next_expected_id;  // 다음에 출력할 Context ID
+} OutputQueue;
+
+void try_flush_queue(OutputQueue* q) {
+    while (q->count > 0) {
+        // 다음 출력 대상 찾기
+        int idx = find_entry_by_id(q, q->next_expected_id);
+        if (idx < 0) break;  // 아직 완료 안 됨
+
+        output_entry(&q->entries[idx]);
+        remove_entry(q, idx);
+        q->next_expected_id++;
+    }
+}
+

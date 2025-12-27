@@ -1,0 +1,1119 @@
+========================================================================
+                      NFA State 전이 설계 문서
+========================================================================
+
+개요
+------------------------------------------------------------------------
+단일 Context 내에서 State 전이와 완료 처리를 다룹니다.
+"하나의 매칭이 어떻게 진행되는가"에 집중합니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                     RPR 매칭 모드 (3개 축)                           │
+├──────────────────────────────────────────────────────────────────────┤
+│  [축 1] 출력 행 수: ONE ROW / ALL ROWS                               │
+│  [축 2] 수량자 탐욕성: GREEDY / RELUCTANT    ← 본 문서 (2.1절)       │
+│  [축 3] SKIP 옵션: PAST LAST / TO NEXT                               │
+└──────────────────────────────────────────────────────────────────────┘
+
+본 문서는 축 2 (수량자 탐욕성)를 상세히 다룹니다.
+축 1, 3은 다중 Context 관리 영역으로, 별도 설계가 필요합니다.
+
+
+========================================================================
+1. 자료구조
+========================================================================
+
+1.1 MatchState (매치 상태)
+------------------------------------------------------------------------
+단일 NFA 상태를 나타냅니다. 패턴 내 위치와 반복 카운터, Summary를 보관.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                           MatchState                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│ elementIndex: number   // 현재 PatternElement 위치                   │
+│                        //   - 0 이상: 패턴 내 위치                   │
+│                        //   - -1: 매칭 완료                          │
+├──────────────────────────────────────────────────────────────────────┤
+│ counts: number[]       // 깊이별 반복 카운터                         │
+│                        // counts[depth] = 해당 깊이의 반복 횟수      │
+├──────────────────────────────────────────────────────────────────────┤
+│ summaries: Summary[]   // Summary 배열 (생성 순서 유지)              │
+│                        // 분기 시 여러 경로 보관 (CLASSIFIER용)      │
+└──────────────────────────────────────────────────────────────────────┘
+
+상태 동등성:
+  - elementIndex + counts[] 일치 시 동일 상태
+  - Merge 시 summaries는 병합됨
+
+
+1.1.1 Summary (경로 및 집계)
+------------------------------------------------------------------------
+Aggregate 값과 경로 정보를 보관.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                            Summary                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│ aggregates: {}         // 증분 집계값 (SUM, COUNT, FIRST, LAST 등)   │
+├──────────────────────────────────────────────────────────────────────┤
+│ paths: string[][]      // 매칭된 변수 경로들 (생성 순서 유지)        │
+└──────────────────────────────────────────────────────────────────────┘
+
+Merge 규칙:
+  - aggregates{} 값 동일 시 Summary Merge → paths 병합
+  - summaries[0].paths[0] = Lexical Order 우선 경로
+
+
+1.2 MatchContext (매치 컨텍스트)
+------------------------------------------------------------------------
+동일 시작행의 상태 그룹입니다. 하나의 매치 시도를 표현.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                          MatchContext                                │
+├──────────────────────────────────────────────────────────────────────┤
+│ matchStart: number     // 매칭 시작 행 (고유 식별자)                 │
+│ matchEnd: number       // 매칭 종료 행 (matchedState 갱신 시 저장)   │
+├──────────────────────────────────────────────────────────────────────┤
+│ states: MatchState[]   // 활성 State들 (생성 순서 유지, 모든 분기)   │
+├──────────────────────────────────────────────────────────────────────┤
+│ matchedState:          // Greedy 폴백용 보존 완료 (선두 경로 1개만)  │
+│   MatchState | null    //   최장 + Lexical Order 우선 State          │
+└──────────────────────────────────────────────────────────────────────┘
+
+메서드:
+  - preserveMatch(state)   : 폴백용 완료 상태 보존
+  - getMatchedState()      : 보존된 완료 반환 (폴백 시)
+  - getMatchedEnd()        : matchStart + matchedState
+                               .summaries[0].paths[0].length - 1
+
+
+========================================================================
+2. 핵심 개념
+========================================================================
+
+2.1 수량자 탐욕성
+------------------------------------------------------------------------
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         수량자 모드                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  GREEDY (기본값): A*, A+, A?, A{n,m}                                 │
+│    → 가능한 많이 매칭 (최장 우선)                                    │
+│    → 완료 시 더 긴 매칭 시도 가능하면 계속 진행                      │
+│    → 실패 시 보존된 완료 상태로 폴백                                 │
+│                                                                      │
+│  RELUCTANT: A*?, A+?, A??, A{n,m}?                                   │
+│    → 가능한 적게 매칭 (최단 우선)                                    │
+│    → 첫 완료 시점에서 즉시 종료                                      │
+│    → 폴백 없음                                                       │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+모드별 동작 차이:
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  패턴: A B+                                                     │
+  │  입력: [A], [B], [B], [B]                                       │
+  ├─────────────────────────────────────────────────────────────────┤
+  │                                                                 │
+  │  GREEDY (B+):                                                   │
+  │    Row 0: A 매칭 → B 대기                                       │
+  │    Row 1: B 매칭, count=1, min 충족 → 완료 가능하나 계속 진행   │
+  │    Row 2: B 매칭, count=2 → 계속 진행                           │
+  │    Row 3: B 매칭, count=3 → 입력 종료 → 완료                    │
+  │    결과: [A B B B] (최장)                                       │
+  │                                                                 │
+  │  RELUCTANT (B+?):                                               │
+  │    Row 0: A 매칭 → B 대기                                       │
+  │    Row 1: B 매칭, count=1, min 충족 → 즉시 완료                 │
+  │    결과: [A B] (최단)                                           │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
+
+
+2.2 NFA 특성
+------------------------------------------------------------------------
+
+  특성        설명
+  --------------------------------------------------------------------
+  비결정적    한 입력에 여러 전이 가능 (상태 분기)
+  모드 기반   GREEDY/RELUCTANT에 따라 완료 처리 방식 변경
+  다중 경로   CLASSIFIER()용 모든 매칭 경로 추적
+
+
+2.3 용어 정의
+------------------------------------------------------------------------
+
+  용어                  설명
+  --------------------------------------------------------------------
+  State                 현재 패턴 위치 + 반복 카운터 + 매칭 경로
+  Context               동일 시작행의 State 그룹 (매치 단위)
+  Wait Position         입력 대기 위치 (VAR 또는 #ALT)
+  Epsilon Transition    입력 소비 없는 전이 (#END, #FIN)
+  Preserved Completion  Greedy에서 폴백용으로 보존된 완료 상태 (State 전체)
+
+
+2.4 상태 전이 다이어그램
+------------------------------------------------------------------------
+
+                            입력 행 [trueVars]
+                                    │
+                                    ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                        현재 상태 (State)                         │
+  │                    elementIndex, counts[]                        │
+  └────────────────────────────────┬─────────────────────────────────┘
+                                   │
+           ┌───────────────────────┼───────────────────────┐
+           ▼                       ▼                       ▼
+   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+   │       VAR        │   │       #ALT       │   │       #END       │
+   ├──────────────────┤   ├──────────────────┤   ├──────────────────┤
+   │     match?       │   │    각 대안 시도  │   │    count 검사    │
+   └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
+            │                      │                      │
+            └──────────────────────┼──────────────────────┘
+                                   ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                      다음 상태들 (0개 이상)                      │
+  └────────────────────────────────┬─────────────────────────────────┘
+                                   │
+                                   ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                    expandToWaitPositions()                       │
+  │                      (epsilon 전이 처리)                         │
+  └────────────────────────────────┬─────────────────────────────────┘
+                                   │
+                                   ▼
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                  대기 상태 (VAR/#ALT) 또는 완료 (-1)             │
+  └──────────────────────────────────────────────────────────────────┘
+
+
+========================================================================
+3. 완료 처리 (모드별)
+========================================================================
+
+완료 상태 발생 시 처리 방식은 수량자 탐욕성에 따라 다릅니다.
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                         완료 처리 알고리즘                           │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│              완료 상태 발생 (elementIndex = -1)                      │
+│                               │                                      │
+│                               ▼                                      │
+│                ┌──────────────────────────────┐                      │
+│                │   활성 상태가 남아있고       │                      │
+│                │   패턴 입력 매칭 가능?       │                      │
+│                └──────────────┬───────────────┘                      │
+│                               │                                      │
+│            YES ┌──────────────┴─────────────────┐ NO                 │
+│                │                                │                    │
+│                ▼                                ▼                    │
+│   ┌─────────────────────────┐    ┌─────────────────────────────┐     │
+│   │      더 진행 가능       │    │       더 진행 불가          │     │
+│   └────────────┬────────────┘    └──────────────┬──────────────┘     │
+│                │                                │                    │
+│                ▼                                ▼                    │
+│   ┌─────────────────────────┐    ┌─────────────────────────────┐     │
+│   │   GREEDY 수량자인가?    │    │      최종 결과 확정         │     │
+│   └───────────┬─────────────┘    │                             │     │
+│               │                  │   보존된 완료 있으면 폴백   │     │
+│               │             NO   │   없으면 매칭 실패          │     │
+│         YES ┌─┴──────────────┐   │   → Lexical Order 1개 출력  │     │
+│             │                │   └─────────────────────────────┘     │
+│             ▼                ▼                                       │
+│   ┌────────────────────┐  ┌────────────────────┐                     │
+│   │  보존 후 계속 진행 │  │    즉시 완료       │                     │
+│   │     (폴백용)       │  │   (RELUCTANT)      │                     │
+│   └────────────────────┘  └────────────────────┘                     │
+│                                                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│  보존 기준 (GREEDY):                                                 │
+│    1. 가장 긴 완료 경로를 가진 State 1개 보존                        │
+│    2. 길이 같으면 Lexical Order 우선 State 선택                      │
+│    3. 새로운 더 긴 완료 발생 시 교체                                 │
+│                                                                      │
+│  보존 내용:                                                          │
+│    - state: 완료 MatchState (elementIndex=-1, counts, summaries)     │
+│    - matchEnd: matchedState 갱신 시점의 currentRow                   │
+│                                                                      │
+│  폴백 조건 (GREEDY):                                                 │
+│    - 활성 상태가 모두 사망 (입력 불매칭)                             │
+│    - matchedState 존재 → 보존된 State로 결과 확정                    │
+│    - 보존된 matchEnd 사용 (갱신 시점에 저장된 값)                    │
+└──────────────────────────────────────────────────────────────────────┘
+
+GREEDY vs RELUCTANT 비교:
+
+  ┌────────────────┬─────────────────────┬─────────────────────┐
+  │                │      GREEDY         │     RELUCTANT       │
+  ├────────────────┼─────────────────────┼─────────────────────┤
+  │ 완료 시점      │ 폴백용 보존         │ 즉시 확정           │
+  │ 활성 상태      │ 계속 진행           │ 폐기                │
+  │ 폴백           │ 지원                │ 없음                │
+  │ 결과           │ 최장 매칭           │ 최단 매칭           │
+  │ 수량자 문법    │ *, +, ?, {n,m}      │ *?, +?, ??, {n,m}?  │
+  └────────────────┴─────────────────────┴─────────────────────┘
+
+
+========================================================================
+4. 전이 알고리즘
+========================================================================
+
+4.1 consumeInput(states, trueVars)
+------------------------------------------------------------------------
+입력을 소비하여 다음 상태를 생성합니다.
+
+FUNCTION consumeInput(states, trueVars):
+    activeStates = Map()
+    completedStates = Map()
+    deadStates = []
+
+    FOR state IN states:
+        results = transition(state, trueVars)
+
+        IF results.length == 0:
+            deadStates.push(state)  # 매칭 실패
+
+        FOR newState IN results:
+            hash = newState.hash()
+            IF newState.elementIndex == -1:
+                # 완료 상태
+                IF completedStates.has(hash):
+                    completedStates.get(hash).mergePaths(newState)
+                ELSE:
+                    completedStates.set(hash, newState)
+            ELSE:
+                # 활성 상태
+                IF activeStates.has(hash):
+                    activeStates.get(hash).mergePaths(newState)
+                ELSE:
+                    activeStates.set(hash, newState)
+
+    RETURN (activeStates, completedStates, deadStates)
+END FUNCTION
+
+
+4.2 transition(state, trueVars)
+------------------------------------------------------------------------
+핵심 전이 함수입니다. 현재 위치에서 입력을 소비합니다.
+
+FUNCTION transition(state, trueVars):
+    results = []
+    elem = pattern.elements[state.elementIndex]
+
+    IF elem == null OR elem.isFinish():
+        # 패턴 종료
+        RETURN [new MatchState(-1, state.counts, state.summaries)]
+
+    IF elem.isVar():
+        transitionVar(state, elem, trueVars, results)
+    ELSE IF elem.isAltStart():
+        transitionAlt(state, elem, trueVars, results)
+    ELSE IF elem.isGroupEnd():
+        transitionGroupEnd(state, elem, results)
+
+    RETURN results
+END FUNCTION
+
+
+4.3 transitionVar(state, elem, trueVars, results)
+------------------------------------------------------------------------
+VAR 요소 전이입니다.
+
+FUNCTION transitionVar(state, elem, trueVars, results):
+    matches = elem.varName IN trueVars
+    count = state.counts[elem.depth]
+
+    IF matches:
+        newCount = count + 1
+        newState = state.withMatch(elem.varName)
+        newState.counts[elem.depth] = newCount
+
+        IF newCount < elem.max:
+            # 더 매칭 가능 - VAR에 머묾
+            results.push(newState)
+        ELSE:
+            # 최대 도달 - 다음으로 이동
+            newState.counts[elem.depth] = 0
+            newState.elementIndex = elem.next
+            results.push(newState)
+    ELSE:
+        # 매칭 안됨
+        IF count >= elem.min:
+            # 최소 충족 - 다음으로 이동 (재귀적으로 체인 처리)
+            skipState = state.clone()
+            skipState.counts[elem.depth] = 0
+            skipState.elementIndex = elem.next
+            subResults = transition(skipState, trueVars)
+            results.push(...subResults)
+        # ELSE: 사망 (min 미충족)
+END FUNCTION
+
+
+4.4 transitionAlt(state, elem, trueVars, results)
+------------------------------------------------------------------------
+#ALT 요소 전이입니다. 각 대안을 시도합니다.
+
+FUNCTION transitionAlt(state, elem, trueVars, results):
+    anyMatched = false
+
+    # 각 대안 시도 (Lexical Order)
+    altIdx = elem.next
+    WHILE altIdx >= 0:
+        altElem = pattern.elements[altIdx]
+        altState = state.clone()
+        altState.elementIndex = altIdx
+
+        subResults = transition(altState, trueVars)
+        IF subResults.length > 0:
+            anyMatched = true
+            results.push(...subResults)
+
+        altIdx = altElem.jump
+
+    # 아무것도 매칭 안되면 그룹 탈출 시도
+    IF NOT anyMatched:
+        endElem = findGroupEnd(elem)
+        IF endElem AND state.counts[endElem.depth] >= endElem.min:
+            exitState = state.clone()
+            exitState.counts[endElem.depth] = 0
+            exitState.elementIndex = endElem.next
+            subResults = transition(exitState, trueVars)
+            IF subResults.length > 0:
+                results.push(...subResults)
+            ELSE:
+                results.push(exitState)
+END FUNCTION
+
+
+4.5 transitionGroupEnd(state, elem, results)
+------------------------------------------------------------------------
+#END 요소 전이입니다. 반복 여부를 결정합니다.
+
+FUNCTION transitionGroupEnd(state, elem, results):
+    count = state.counts[elem.depth] + 1
+
+    IF count < elem.min:
+        # 최소 미충족 - 반드시 반복
+        repeatState = state.clone()
+        repeatState.counts[elem.depth] = count
+        resetInnerCounts(repeatState, elem.depth)
+        repeatState.elementIndex = elem.jump  # 그룹 시작으로
+        results.push(repeatState)
+
+    ELSE IF count < elem.max:
+        # 분기: 반복 OR 탈출
+        repeatState = state.clone()
+        repeatState.counts[elem.depth] = count
+        resetInnerCounts(repeatState, elem.depth)
+        repeatState.elementIndex = elem.jump
+        results.push(repeatState)
+
+        exitState = state.clone()
+        exitState.counts[elem.depth] = 0
+        exitState.elementIndex = elem.next
+        results.push(exitState)
+
+    ELSE:
+        # 최대 도달 - 탈출만
+        exitState = state.clone()
+        exitState.counts[elem.depth] = 0
+        exitState.elementIndex = elem.next
+        results.push(exitState)
+END FUNCTION
+
+
+4.6 expandToWaitPositions(states)
+------------------------------------------------------------------------
+Epsilon 전이를 처리합니다. VAR 또는 #ALT에서 대기합니다.
+
+FUNCTION expandToWaitPositions(states):
+    result = []
+    seen = Map()  # hash -> state
+    queue = [...states]
+
+    WHILE queue.length > 0:
+        state = queue.shift()
+        hash = state.hash()
+
+        # 중복 병합
+        IF seen.has(hash):
+            seen.get(hash).mergePaths(state)
+            CONTINUE
+        seen.set(hash, state)
+
+        elem = pattern.elements[state.elementIndex]
+
+        IF state.elementIndex == -1 OR elem == null:
+            # 완료
+            result.push(state with elementIndex=-1)
+
+        ELSE IF elem.isFinish():
+            # #FIN -> 완료
+            result.push(state with elementIndex=-1)
+
+        ELSE IF elem.isVar():
+            # VAR에서 대기
+            result.push(state)
+            # 스킵 가능하면 스킵 경로도 탐색
+            IF state.counts[elem.depth] >= elem.min:
+                skipState = state.clone()
+                skipState.counts[elem.depth] = 0
+                skipState.elementIndex = elem.next
+                queue.push(skipState)
+
+        ELSE IF elem.isAltStart():
+            # #ALT에서 대기
+            result.push(state)
+            # 그룹 스킵 가능하면 스킵 경로도 탐색
+            endElem = findGroupEnd(elem)
+            IF endElem AND state.counts[endElem.depth] >= endElem.min:
+                skipState = state.clone()
+                skipState.counts[endElem.depth] = 0
+                skipState.elementIndex = endElem.next
+                queue.push(skipState)
+
+        ELSE IF elem.isGroupEnd():
+            # #END 처리 (epsilon)
+            count = state.counts[elem.depth] + 1
+            IF count < elem.min:
+                # 반복
+                repeatState = ...
+                queue.push(repeatState)
+            ELSE IF count < elem.max:
+                # 분기
+                queue.push(repeatState)
+                queue.push(exitState)
+            ELSE:
+                # 탈출
+                queue.push(exitState)
+
+    RETURN result
+END FUNCTION
+
+
+========================================================================
+5. 수량자 모드별 동작
+========================================================================
+
+5.1 GREEDY 동작 (기본값)
+------------------------------------------------------------------------
+
+조건: 완료 상태와 활성 상태가 동시에 존재하고, 활성 상태가 진행 가능
+
+FUNCTION handleCompletionGreedy(completedStates, activeStates, input):
+    IF completedStates.size > 0 AND activeStates.size > 0:
+        IF activeStates can consume current input:
+            # 더 긴 매칭 시도 가능 → 완료 보존 후 계속 진행
+            bestPath = selectBest(completedStates)  # 최장 + Lexical
+            preserveForFallback(bestPath)
+            discardOthers(completedStates)
+            CONTINUE with activeStates
+        ELSE:
+            # 더 진행 불가 → 최종 결과 확정
+            RETURN selectBest(completedStates)
+    ELSE IF activeStates.size == 0 AND hasPreservedCompletion():
+        # 활성 상태 전멸 → 폴백
+        RETURN getPreservedCompletion()
+
+예: A+
+  입력 [A], [A], [B]
+
+  행 0: State(0, [1]) 활성, 완료(A) 가능
+        → 활성이 A 소비 가능 → 완료 상태(A) 보존, 계속 진행
+  행 1: State(0, [2]) 활성, 완료(A A) 가능
+        → 활성이 A 소비 가능 → 완료 상태(A A) 보존 (이전 것 교체)
+  행 2: B 입력, A 불매칭 → 활성 상태 전멸
+        → 보존된 완료 상태(A A)로 폴백
+
+
+5.2 RELUCTANT 동작
+------------------------------------------------------------------------
+
+RELUCTANT는 min 충족 시 즉시 완료하며, 폴백이 없습니다.
+
+FUNCTION handleCompletionReluctant(completedStates, activeStates, input):
+    IF completedStates.size > 0:
+        # min 충족 즉시 완료 → 활성 상태 폐기
+        discardAll(activeStates)
+        RETURN selectBest(completedStates)
+    ELSE:
+        CONTINUE with activeStates
+
+예: A+?
+  입력 [A], [A], [B]
+
+  행 0: State(0, [1]) 활성, 완료(A) 가능
+        → RELUCTANT: min=1 충족 → 즉시 완료
+        결과: [A]
+
+RELUCTANT가 더 효율적인 경우:
+  - 첫 완료에서 종료하므로 처리량 감소
+  - 폴백 로직 불필요
+  - 메모리 절약 (보존된 완료 상태 불필요)
+
+
+5.3 모드 비교표
+------------------------------------------------------------------------
+
+  ┌─────────────────┬─────────────────────┬─────────────────────┐
+  │                 │      GREEDY         │     RELUCTANT       │
+  ├─────────────────┼─────────────────────┼─────────────────────┤
+  │ 수량자 문법     │ *, +, ?, {n,m}      │ *?, +?, ??, {n,m}?  │
+  │ 매칭 전략       │ 최장 우선           │ 최단 우선           │
+  │ min 충족 시     │ 보존 후 계속 진행   │ 즉시 완료           │
+  │ 활성 상태       │ 유지                │ 폐기                │
+  │ 폴백            │ 지원                │ 없음                │
+  │ 메모리          │ 보존 공간 필요      │ 최소                │
+  │ 결과 예시 (A+)  │ [A A A A]           │ [A]                 │
+  └─────────────────┴─────────────────────┴─────────────────────┘
+
+
+5.4 PatternElement 확장 (RELUCTANT 지원)
+------------------------------------------------------------------------
+
+RELUCTANT 지원을 위해 PatternElement에 플래그 추가:
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ PatternElement (확장)                                            │
+  ├──────────────────────────────────────────────────────────────────┤
+  │ ...기존 필드...                                                  │
+  │ reluctant: boolean    // true면 RELUCTANT 모드 (기본값 false)    │
+  └──────────────────────────────────────────────────────────────────┘
+
+파서에서 수량자 뒤에 '?'가 있으면 reluctant=true로 설정:
+  - A*   → min=0, max=Inf, reluctant=false
+  - A*?  → min=0, max=Inf, reluctant=true
+  - A+   → min=1, max=Inf, reluctant=false
+  - A+?  → min=1, max=Inf, reluctant=true
+
+
+========================================================================
+6. CLASSIFIER 지원
+========================================================================
+
+6.1 경로 추적
+------------------------------------------------------------------------
+
+MatchState.summaries[].paths:
+  - 각 매칭에서 변수명 누적
+  - 분기 시 경로 복제
+  - 병합 시 경로 합집합
+
+예: (A | B) C
+  입력 [A,B], [C]
+
+  행 0:
+    A 경로: [A]
+    B 경로: [B]
+  행 1:
+    A 경로: [A, C]
+    B 경로: [B, C]
+
+  summaries[0].paths = [[A, C], [B, C]]
+
+
+6.2 경로 형식
+------------------------------------------------------------------------
+
+summaries[i].paths[j] = [var1, var2, ...]
+
+  - var1, var2, ...: 매칭된 변수 시퀀스
+  - Context 식별은 matchStart 사용 (별도 id 불필요)
+
+CLASSIFIER() 사용:
+  - 각 행에 해당 변수 할당
+  - 다중 경로면 첫 번째 사용 (또는 사용자 선택)
+
+
+6.3 결과 선택 규칙 (ONE ROW PER MATCH)
+------------------------------------------------------------------------
+
+모든 모드에서 최종 결과는 1개만 출력:
+
+  선택 기준:
+    1. 가장 긴 경로 (path.length 최대)
+    2. 길이 같으면 Lexical Order 우선 (사전순)
+
+  예: 완료 경로 = [[A, B, C], [A, B], [A, C, D]]
+      정렬 후: [[A, C, D], [A, B, C], [A, B]]
+      결과: [A, C, D] (길이 3으로 동일, Lexical Order에서 C < B)
+
+  GREEDY:
+    - 보존 시 최선 1개만 보존
+    - 최종 결과도 1개만 출력
+
+  RELUCTANT:
+    - 첫 완료에서 최선 1개 선택
+    - 즉시 출력
+
+
+========================================================================
+7. 예제
+========================================================================
+
+7.1 기본 매칭: A+ B
+------------------------------------------------------------------------
+
+패턴: A+ B
+입력: [A], [A], [B]
+
+Pattern elements:
+  [0] VAR:A {1,Inf} next=1
+  [1] VAR:B {1,1} next=2
+  [2] #FIN
+
+행 0: [A]
+  - 새 Context #0 시작
+  - State(0, [0,0]) -> A 매칭 -> State(0, [1,0])  (A에 머묾)
+  - expandToWait: State(0, [1,0]) 유지 (min=1 충족, 스킵가능)
+  - 스킵 경로 State(1, [0,0]) 추가
+  - 대기: [State(0), State(1)]
+
+행 1: [A]
+  - State(0): A 매칭 -> State(0, [2,0])
+  - State(1): B 기대, A 입력 -> 사망
+  - 스킵 경로 State(1) 추가
+  - 대기: [State(0, [2,0]), State(1, [0,0])]
+
+행 2: [B]
+  - State(0): A 기대, B 입력 -> min=1 충족, next로 이동 -> State(1)
+  - State(1): B 매칭 -> State(2, #FIN) -> 완료
+
+결과: 매칭 성공, 경로 [A, A, B]
+
+
+7.2 대안 매칭: (A | B)+
+------------------------------------------------------------------------
+
+패턴: (A | B)+
+입력: [A], [B], [C]
+
+Pattern elements:
+  [0] #ALT next=1 jump=-1
+  [1] VAR:A {1,1} next=3 jump=2
+  [2] VAR:B {1,1} next=3 jump=-1
+  [3] #END {1,Inf} next=4 jump=0
+  [4] #FIN
+
+행 0: [A]
+  - 새 Context #0
+  - State(0, #ALT) -> A 대안 선택 -> State(1)
+  - State(1): A 매칭 -> State(3, #END)
+  - #END 처리: count=1, min=1 충족
+    - 반복: State(0) (count=1)
+    - 탈출: State(4, #FIN) -> 완료
+  - 대기: [State(0, [1])]
+  - 완료 경로: [A] (잠재적)
+
+행 1: [B]
+  - State(0, #ALT): B 대안 선택 -> State(2)
+  - State(2): B 매칭 -> State(3, #END)
+  - #END: count=2
+    - 반복: State(0) (count=2)
+    - 탈출: 완료
+  - Greedy: 반복 가능하므로 탈출 경로 폐기
+  - 대기: [State(0, [2])]
+
+행 2: [C]
+  - State(0, #ALT): A도 B도 매칭 안됨
+  - 그룹 탈출 시도: min=1 충족 -> State(4, #FIN) -> 완료
+  - 모든 상태 완료
+
+결과: 매칭 성공, 경로 [A, B]
+
+
+7.3 중첩 그룹: ((A)+)+
+------------------------------------------------------------------------
+
+패턴: ((A)+)+
+입력: [A], [A], [B]
+
+Pattern elements:
+  [0] VAR:A {1,Inf} next=1 (depth=2)
+  [1] #END {1,Inf} next=2 jump=0 (depth=1)
+  [2] #END {1,Inf} next=3 jump=0 (depth=0)
+  [3] #FIN
+
+행 0: [A]
+  - 새 Context #0
+  - State(0): A 매칭 -> counts[2]=1
+  - expandToWait:
+    - A에서 스킵 가능 -> #END[1] -> 내부 그룹 완료 -> #END[2] -> ...
+    - 분기 발생
+  - 대기: 여러 상태
+
+행 1: [A]
+  - 각 상태에서 A 매칭
+  - 내부/외부 그룹 카운터 증가
+  - 분기 지속
+
+행 2: [B]
+  - A 매칭 안됨
+  - 각 그룹의 min 충족 여부 확인
+  - 충족된 경로만 탈출 -> #FIN
+
+결과: 매칭 성공 (가능한 모든 경로)
+
+
+7.4 Greedy 폴백: (A | B C)+
+------------------------------------------------------------------------
+
+패턴: (A | B C)+
+입력: [A], [B], [D]
+
+Pattern elements:
+  [0] #ALT next=1 jump=2
+  [1] VAR:A {1,1} next=4 jump=2
+  [2] VAR:B {1,1} next=3 jump=-1
+  [3] VAR:C {1,1} next=4 jump=-1
+  [4] #END {1,Inf} next=5 jump=0
+  [5] #FIN
+
+행 0: [A]
+  - 새 Context #0
+  - State(0, #ALT) -> A 대안 선택 -> State(1)
+  - State(1): A 매칭 -> State(4, #END)
+  - #END: count=1, min=1 충족
+    - 반복: State(0) (count=1) -> 미완료
+    - 탈출: State(5, #FIN) -> 완료(A)
+  - Greedy: 미완료 진행 가능 -> 완료 상태(A) 보존 (폴백용)
+  - 대기: [State(0, [1])]
+  - 보존된 완료 상태: [A]
+
+행 1: [B]
+  - State(0, #ALT): B 대안 선택 -> State(2)
+  - State(2): B 매칭 -> State(3) (C 대기)
+  - 새 완료 없음 (BC 미완성)
+  - 대기: [State(3, [1])]
+  - 보존된 완료 상태: [A] (Row 0에서 보존)
+
+행 2: [D]
+  - State(3): C 기대, D 입력 -> 사망
+  - 미완료 전멸 -> 보존된 완료 상태로 폴백
+  - 결과: [A] (2행 전 완료)
+
+결과: 매칭 성공, 경로 [A], 범위 Row 0-0
+
+참고: 더 긴 시퀀스에서의 폴백
+  패턴: (A | B C D E)+
+  입력: [A], [B], [C], [D], [X]
+
+  - Row 0: A 매칭 -> 완료(A) 보존
+  - Row 1: B 매칭 -> C 대기
+  - Row 2: C 매칭 -> D 대기
+  - Row 3: D 매칭 -> E 대기
+  - Row 4: X 입력 -> E 기대 실패 -> 4행 전 완료(A)로 폴백
+
+
+7.5 RELUCTANT 예제: A B+?
+------------------------------------------------------------------------
+
+패턴: A B+? (RELUCTANT 수량자)
+입력: [A], [B], [B], [B]
+
+Pattern elements:
+  [0] VAR:A {1,1} next=1
+  [1] VAR:B {1,Inf} next=2 reluctant=true   ← RELUCTANT 플래그
+  [2] #FIN
+
+행 0: [A]
+  - 새 Context #0
+  - State(0): A 매칭 → State(1) B 대기
+
+행 1: [B]
+  - State(1): B 매칭, count=1, min=1 충족
+  - RELUCTANT: min 충족 즉시 완료 (더 진행 안 함)
+  - 결과: [A B]
+
+GREEDY와 비교:
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  패턴: A B+  (GREEDY, 기본값)                                   │
+  │  입력: [A], [B], [B], [B]                                       │
+  ├─────────────────────────────────────────────────────────────────┤
+  │  Row 0: A 매칭                                                  │
+  │  Row 1: B 매칭, count=1, min 충족 → 완료 보존, 계속 진행        │
+  │  Row 2: B 매칭, count=2 → 계속 진행                             │
+  │  Row 3: B 매칭, count=3 → 입력 종료 → 최종 완료                 │
+  │  결과: [A B B B] (최장)                                         │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  패턴: A B+? (RELUCTANT)                                        │
+  │  입력: [A], [B], [B], [B]                                       │
+  ├─────────────────────────────────────────────────────────────────┤
+  │  Row 0: A 매칭                                                  │
+  │  Row 1: B 매칭, count=1, min 충족 → 즉시 완료                   │
+  │  결과: [A B] (최단)                                             │
+  └─────────────────────────────────────────────────────────────────┘
+
+
+7.6 RELUCTANT 폴백 없음 예제
+------------------------------------------------------------------------
+
+RELUCTANT는 첫 완료에서 종료하므로 폴백이 필요 없습니다.
+
+패턴: (A | B C)+? (RELUCTANT)
+입력: [A], [B], [D]
+
+GREEDY:
+  - Row 0: A 매칭, 완료(A) 보존, 계속 진행
+  - Row 1: B 매칭, C 대기
+  - Row 2: D 입력, C 기대 실패 → 폴백 → 결과: [A]
+
+RELUCTANT:
+  - Row 0: A 매칭, min 충족 → 즉시 완료
+  - 결과: [A] (폴백 불필요)
+
+두 모드 모두 결과는 같지만 RELUCTANT가 더 빨리 종료합니다.
+
+
+========================================================================
+8. Merge 규칙
+========================================================================
+
+8.1 State Merge (Context 내부)
+------------------------------------------------------------------------
+
+  - 조건: elementIndex + counts[] 동일
+  - 동작: summaries 병합 (생성 순서 유지)
+  - 결과: 동일 위치의 State 수 감소, 중복 계산 방지
+
+
+8.2 Summary Merge (State 내부)
+------------------------------------------------------------------------
+
+  - 조건: aggregates{} 값 동일
+  - 동작: paths 병합 (생성 순서 유지)
+  - 결과: summaries[0].paths[0] = Lexical Order 우선 경로
+
+
+8.3 Lexical Order 규칙
+------------------------------------------------------------------------
+
+Merge 시 경로 순서가 결과를 결정합니다:
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Lexical Order = 패턴에서 대안이 나열된 순서                     │
+  │                                                                  │
+  │  (A | B): A가 먼저 → A 경로가 paths[0]                           │
+  │  (B | A): B가 먼저 → B 경로가 paths[0]                           │
+  │                                                                  │
+  │  CLASSIFIER는 summaries[0].paths[0] 반환 → 순서가 결과 결정      │
+  └──────────────────────────────────────────────────────────────────┘
+
+
+8.4 Merge 예제
+------------------------------------------------------------------------
+
+패턴: (A | B) C
+입력: [A,B], [C]
+
+행 0:
+  - A 매칭 (먼저 처리) → State(elemIdx=2, summaries=[{paths:[[A]]}])
+  - B 매칭 (나중 처리) → State(elemIdx=2, summaries=[{paths:[[B]]}])
+  - 동일 elementIndex=2, 동일 counts → State Merge
+  - 결과: State(elemIdx=2, summaries=[{paths:[[A],[B]]}])
+
+행 1:
+  - C 매칭 → State(완료, summaries=[{paths:[[A,C],[B,C]]}])
+
+결과: 2개 경로 유지, A 경로가 우선 (summaries[0].paths[0])
+
+
+8.5 Lexical Order가 중요한 이유
+------------------------------------------------------------------------
+
+ONE ROW PER MATCH에서 최종 결과 선택:
+
+  1. 가장 긴 경로 선택
+  2. 길이 같으면 Lexical Order 우선 (summaries[0].paths[0])
+
+예:
+  패턴: (A | B)+
+  입력: [A,B]
+
+  완료 경로: [[A], [B]]  (길이 동일)
+  결과: [A] (Lexical Order에서 A가 먼저)
+
+
+========================================================================
+9. API 레퍼런스
+========================================================================
+
+9.1 MatchState
+------------------------------------------------------------------------
+
+  state.clone()                    // 깊은 복사
+  state.withMatch(varName)         // 경로 추가, summaries[0].paths에 변수 추가
+  state.mergeSummaries(other)      // summaries 병합
+  state.hash()                     // 상태 해시 (elementIndex:counts)
+
+
+9.2 MatchContext
+------------------------------------------------------------------------
+
+  ctx.preserveMatch(state)   // 폴백용 완료 상태 보존
+  ctx.getMatchedState()      // 보존된 완료 State 반환
+  ctx.getMatchedEnd()        // matchStart + state.summaries[0].paths[0].length - 1
+  ctx.isCompleted            // 완료 여부
+  ctx.matchedState           // 보존된 완료 State | null
+
+
+========================================================================
+10. C 포팅 고려사항
+========================================================================
+
+10.1 데이터 구조 매핑
+------------------------------------------------------------------------
+
+  JS                    C 대응
+  ----------------------------------------------------------
+  MatchState            struct MatchState
+  MatchContext          struct MatchContext
+  Array.push            고정 크기 배열 + count
+  Map                   해시 테이블 또는 정렬 배열
+  clone()               memcpy + 깊은 복사 함수
+
+
+10.2 구조체 예시
+------------------------------------------------------------------------
+
+// 단일 경로
+typedef struct {
+    var_index_t* vars;         // 동적 배열
+    int length;
+    int capacity;
+} Path;
+
+// 단일 Summary (aggregates + paths)
+typedef struct {
+    // aggregates는 집계 함수에 따라 확장
+    // 현재는 CLASSIFIER용 paths만 구현
+    Path* paths;               // 동적 배열
+    int path_count;
+    int path_capacity;
+} Summary;
+
+typedef struct {
+    int16_t element_index;     // -1 = 완료
+    uint16_t* counts;          // 동적 배열 (길이: maxDepth)
+    int counts_len;
+    Summary* summaries;        // 동적 배열
+    int summary_count;
+    int summary_capacity;
+} MatchState;
+
+
+10.3 메모리 관리
+------------------------------------------------------------------------
+
+상태 복제가 빈번하므로 메모리 풀 사용 권장:
+
+typedef struct {
+    MatchState pool[POOL_SIZE];
+    int used;
+} StatePool;
+
+MatchState* alloc_state(StatePool* pool) {
+    if (pool->used >= POOL_SIZE) return NULL;
+    return &pool->pool[pool->used++];
+}
+
+void reset_pool(StatePool* pool) {
+    pool->used = 0;
+}
+
+
+10.4 해시 함수
+------------------------------------------------------------------------
+
+상태 해시 (중복 검사용):
+
+uint32_t hash_state(MatchState* s) {
+    uint32_t h = s->element_index;
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        h = h * 31 + s->counts[i];
+    }
+    return h;
+}
+
+bool states_equal(MatchState* a, MatchState* b) {
+    if (a->element_index != b->element_index) return false;
+    return memcmp(a->counts, b->counts, sizeof(a->counts)) == 0;
+}
+
+
+10.5 재귀 제거
+------------------------------------------------------------------------
+
+transition() 재귀 호출을 반복으로 변환:
+
+// JS: 재귀
+subResults = transition(skipState, trueVars);
+results.push(...subResults);
+
+// C: 큐 사용
+queue_push(&work_queue, skip_state);
+while (!queue_empty(&work_queue)) {
+    MatchState* s = queue_pop(&work_queue);
+    // ... 처리 ...
+}
+
+
+========================================================================
+11. 구현 상태 및 확장 계획
+========================================================================
+
+11.1 현재 구현 상태
+------------------------------------------------------------------------
+
+  기능                        상태        설명
+  --------------------------------------------------------------------
+  수량자 (?, *, +, {n,m})     O 구현됨    기본 수량자 지원
+  대안선택 (|)                O 구현됨    다중 분기 지원
+  그룹 반복                   O 구현됨    (A B)+, (A | B)* 등
+  중첩 그룹                   O 구현됨    ((A)+)+ 등
+  상태 병합                   O 구현됨    경로 병합 포함
+  GREEDY 매칭                 O 구현됨    폴백 포함
+  CLASSIFIER()                O 구현됨    summaries[].paths 추적
+
+
+11.2 확장 예정
+------------------------------------------------------------------------
+
+  기능                        우선순위    설명
+  --------------------------------------------------------------------
+  RELUCTANT 수량자            높음        *?, +?, {n,m}? 지원
+                                          (??는 선택적, 실질적 차이 적음)
+
+
+11.3 RELUCTANT 구현 가이드
+------------------------------------------------------------------------
+
+RELUCTANT 구현을 위한 주요 변경사항:
+
+1. 파서 확장:
+   - 수량자 뒤 '?' 인식
+   - PatternElement.reluctant 플래그 설정
+
+2. 완료 처리 분기:
+   FUNCTION processCompletion(completedStates, activeStates, ctx):
+       IF element.reluctant:
+           handleCompletionReluctant(...)
+       ELSE:
+           handleCompletionGreedy(...)
+
+3. 보존 로직 스킵:
+   - RELUCTANT면 preserveForFallback() 호출 안 함
+   - 완료 시점에서 활성 상태 즉시 폐기
+
+4. 테스트 케이스:
+   - A+? vs A+ 비교 테스트
+   - (A | B C)+? 최단 매칭 테스트
+   - 폴백 불필요 확인 테스트
+
