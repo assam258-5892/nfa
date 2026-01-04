@@ -1889,7 +1889,7 @@ function renderHistory() {
             <span class="row-num ${hasMatch ? 'match' : ''}">Row ${entry.row}</span>
             <span class="row-input-display">
                 ${entry.input.length > 0
-                    ? entry.input.map(v => `<span class="true-var">${v}</span>`).join(' ')
+                    ? entry.input.map(varId => `<span class="true-var">${executor.pattern.variables[varId]}</span>`).join(' ')
                     : '<span style="color:#666;">∅ (none true)</span>'}
             </span>
         </div>`;

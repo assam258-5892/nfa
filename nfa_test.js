@@ -729,6 +729,72 @@ if (runTest(
     true
 )) passed++; else failed++;
 
+// ============== PATTERN-LEVEL RELUCTANT Mode Tests ==============
+// When pattern has any reluctant quantifier, the whole matcher runs in reluctant mode
+// (first completion wins immediately, no greedy deferral)
+
+// Test 36: Pattern-level reluctant - A+? should make pattern.reluctant=true
+if (runTest(
+    'Pattern-level reluctant: A+? auto-enables reluctant mode',
+    'A+?',
+    [
+        ['A'],      // Row 0: A (min satisfied, should complete immediately in reluctant mode)
+        ['A'],      // Row 1: A (greedy would wait for more)
+        ['A']       // Row 2: A
+    ],
+    true  // Should match at row 0 (reluctant mode: first match wins)
+)) passed++; else failed++;
+
+// Test 37: Pattern-level reluctant - verify pattern.reluctant flag
+{
+    const pattern = parsePattern('A+?');
+    if (pattern.reluctant === true) {
+        console.log('\n[PASS] Test 37: pattern.reluctant = true for A+?');
+        passed++;
+    } else {
+        console.log('\n[FAIL] Test 37: Expected pattern.reluctant = true, got ' + pattern.reluctant);
+        failed++;
+    }
+}
+
+// Test 38: Greedy pattern should have pattern.reluctant=false
+{
+    const pattern = parsePattern('A+');
+    if (pattern.reluctant === false) {
+        console.log('\n[PASS] Test 38: pattern.reluctant = false for A+');
+        passed++;
+    } else {
+        console.log('\n[FAIL] Test 38: Expected pattern.reluctant = false, got ' + pattern.reluctant);
+        failed++;
+    }
+}
+
+// Test 39: Mixed pattern - any reluctant makes pattern reluctant
+{
+    const pattern = parsePattern('A+ B*?');  // B*? is reluctant
+    if (pattern.reluctant === true) {
+        console.log('\n[PASS] Test 39: pattern.reluctant = true for A+ B*? (mixed)');
+        passed++;
+    } else {
+        console.log('\n[FAIL] Test 39: Expected pattern.reluctant = true, got ' + pattern.reluctant);
+        failed++;
+    }
+}
+
+// Test 40: Pattern reluctant mode - no greedy deferral
+// Compare greedy vs reluctant behavior
+if (runTest(
+    'Pattern reluctant: A+? B - completes at first chance (no greedy deferral)',
+    'A+? B',
+    [
+        ['A'],      // Row 0: A matches
+        ['A', 'B'], // Row 1: Both A and B match - should complete immediately
+        ['A'],      // Row 2: More A available (greedy would wait)
+        ['B']       // Row 3: B
+    ],
+    true  // Should match at row 1 (reluctant: first completion wins)
+)) passed++; else failed++;
+
 // Summary
 console.log('\n' + '='.repeat(60));
 console.log(`TEST SUMMARY: ${passed} passed, ${failed} failed`);

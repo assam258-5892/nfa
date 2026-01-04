@@ -55,14 +55,15 @@ class Pattern {
  * Main parsePattern function
  * Parses and compiles in one step, with optional optimization
  */
-function parsePattern(patternStr, options = {}) {
-    const { optimize = false } = options;
+function parsePattern(patternStr, options) {
+    if (!options) options = {};
+    var optimize = options.optimize || false;
 
     // Tokenize and parse to AST
-    const variables = new Set();
-    const tokens = tokenize(patternStr);
-    let pos = { value: 0 };
-    let ast = parseSequence(tokens, pos, variables);
+    var variables = [];  // Array instead of Set
+    var tokens = tokenize(patternStr);
+    var pos = { value: 0 };
+    var ast = parseSequence(tokens, pos, variables);
 
     // Optional optimization
     if (optimize) {
@@ -79,57 +80,76 @@ function parsePattern(patternStr, options = {}) {
  * Compile AST to Pattern (flat element array)
  */
 function compileAST(ast) {
-    const pattern = new Pattern();
+    var pattern = new Pattern();
 
     // Build variable name to ID map first (by order of appearance in AST)
-    const varIdMap = new Map();
-    collectVariables(ast, varIdMap);
-    pattern.variables = Array.from(varIdMap.keys());
+    // varIdMap: { name: id } object instead of Map
+    var varIdMap = {};
+    var varList = [];
+    collectVariables(ast, varIdMap, varList);
+    pattern.variables = varList;
 
     // Flatten AST to elements array (now with varId)
     flattenAST(ast, pattern, 0, varIdMap);
 
     // Set up next pointers (temporarily pointing to finIdx placeholder)
-    const finIdx = pattern.elements.length;  // #FIN will be at this index
-    for (let i = 0; i < pattern.elements.length; i++) {
+    var finIdx = pattern.elements.length;  // #FIN will be at this index
+    for (var i = 0; i < pattern.elements.length; i++) {
         if (pattern.elements[i].next === -1) {
             pattern.elements[i].next = (i < pattern.elements.length - 1) ? i + 1 : finIdx;
         }
     }
 
     // Add #FIN element at the end
-    const finElem = new PatternElement(-3);  // -3 = #FIN
+    var finElem = new PatternElement(-3);  // -3 = #FIN
     finElem.depth = 0;
     finElem.min = 1;
     finElem.max = 1;
     finElem.next = -1;  // End of pattern
+    finElem.jump = -1;
+    finElem.reluctant = false;
     pattern.elements.push(finElem);
 
-    // Calculate max depth
-    pattern.maxDepth = Math.max(...pattern.elements.map(e => e.depth), 0);
+    // Calculate max depth and detect reluctant mode
+    var maxD = 0;
+    var hasReluctant = false;
+    for (var j = 0; j < pattern.elements.length; j++) {
+        if (pattern.elements[j].depth > maxD) {
+            maxD = pattern.elements[j].depth;
+        }
+        if (pattern.elements[j].reluctant) {
+            hasReluctant = true;
+        }
+    }
+    pattern.maxDepth = maxD;
+    pattern.reluctant = hasReluctant;  // Pattern-level reluctant mode
 
     return pattern;
 }
 
 /*
  * Collect variable names from AST in order of appearance
+ * varIdMap: object { name: id }
+ * varList: array of variable names in order
  */
-function collectVariables(node, varIdMap) {
+function collectVariables(node, varIdMap, varList) {
     if (!node) return;
 
+    var i;
     if (node.type === 'VAR') {
-        if (!varIdMap.has(node.name)) {
-            varIdMap.set(node.name, varIdMap.size);
+        if (!(node.name in varIdMap)) {
+            varIdMap[node.name] = varList.length;
+            varList.push(node.name);
         }
     } else if (node.type === 'SEQ') {
-        for (const item of node.items) {
-            collectVariables(item, varIdMap);
+        for (i = 0; i < node.items.length; i++) {
+            collectVariables(node.items[i], varIdMap, varList);
         }
     } else if (node.type === 'GROUP') {
-        collectVariables(node.content, varIdMap);
+        collectVariables(node.content, varIdMap, varList);
     } else if (node.type === 'ALT') {
-        for (const alt of node.alternatives) {
-            collectVariables(alt, varIdMap);
+        for (i = 0; i < node.alternatives.length; i++) {
+            collectVariables(node.alternatives[i], varIdMap, varList);
         }
     }
 }
@@ -155,23 +175,32 @@ function optimizeAST(node) {
 function unwrapGroups(node) {
     if (!node) return node;
 
+    var i, item, alt;
+
     if (node.type === 'SEQ') {
         // Recursively optimize children first
-        node.items = node.items.map(unwrapGroups);
+        for (i = 0; i < node.items.length; i++) {
+            node.items[i] = unwrapGroups(node.items[i]);
+        }
 
         // Unwrap {1,1} groups in sequence
-        const newItems = [];
-        for (const item of node.items) {
+        var newItems = [];
+        for (i = 0; i < node.items.length; i++) {
+            item = node.items[i];
             if (item.type === 'GROUP' && item.min === 1 && item.max === 1) {
                 // Remove GROUP{1,1} wrapper and flatten its content
                 if (item.content.type === 'SEQ') {
-                    newItems.push(...item.content.items);
+                    for (var j = 0; j < item.content.items.length; j++) {
+                        newItems.push(item.content.items[j]);
+                    }
                 } else {
                     newItems.push(item.content);
                 }
             } else if (item.type === 'SEQ') {
                 // Flatten SEQ within SEQ
-                newItems.push(...item.items);
+                for (var k = 0; k < item.items.length; k++) {
+                    newItems.push(item.items[k]);
+                }
             } else {
                 newItems.push(item);
             }
@@ -197,13 +226,18 @@ function unwrapGroups(node) {
 
     if (node.type === 'ALT') {
         // Recursively optimize children first
-        node.alternatives = node.alternatives.map(unwrapGroups);
+        for (i = 0; i < node.alternatives.length; i++) {
+            node.alternatives[i] = unwrapGroups(node.alternatives[i]);
+        }
 
         // Flatten ALT within ALT
-        const newAlts = [];
-        for (const alt of node.alternatives) {
+        var newAlts = [];
+        for (i = 0; i < node.alternatives.length; i++) {
+            alt = node.alternatives[i];
             if (alt.type === 'ALT') {
-                newAlts.push(...alt.alternatives);
+                for (var m = 0; m < alt.alternatives.length; m++) {
+                    newAlts.push(alt.alternatives[m]);
+                }
             } else {
                 newAlts.push(alt);
             }
@@ -226,8 +260,12 @@ function unwrapGroups(node) {
 function removeDuplicates(node) {
     if (!node) return node;
 
+    var i, j;
+
     if (node.type === 'SEQ') {
-        node.items = node.items.map(removeDuplicates);
+        for (i = 0; i < node.items.length; i++) {
+            node.items[i] = removeDuplicates(node.items[i]);
+        }
         return node;
     }
 
@@ -237,12 +275,21 @@ function removeDuplicates(node) {
     }
 
     if (node.type === 'ALT') {
-        node.alternatives = node.alternatives.map(removeDuplicates);
+        for (i = 0; i < node.alternatives.length; i++) {
+            node.alternatives[i] = removeDuplicates(node.alternatives[i]);
+        }
 
         // Remove duplicates by comparing AST structure
-        const unique = [];
-        for (const alt of node.alternatives) {
-            const isDup = unique.some(u => astEqual(u, alt));
+        var unique = [];
+        for (i = 0; i < node.alternatives.length; i++) {
+            var alt = node.alternatives[i];
+            var isDup = false;
+            for (j = 0; j < unique.length; j++) {
+                if (astEqual(unique[j], alt)) {
+                    isDup = true;
+                    break;
+                }
+            }
             if (!isDup) {
                 unique.push(alt);
             }
@@ -267,22 +314,26 @@ function removeDuplicates(node) {
 function optimizeQuantifiers(node) {
     if (!node) return node;
 
+    var i, item, next, count, merged, innerNode, newMin, newMax;
+
     if (node.type === 'SEQ') {
         // Recursively optimize children first
-        node.items = node.items.map(optimizeQuantifiers);
+        for (i = 0; i < node.items.length; i++) {
+            node.items[i] = optimizeQuantifiers(node.items[i]);
+        }
 
         // Merge consecutive identical VAR nodes
-        const newItems = [];
-        let i = 0;
+        var newItems = [];
+        i = 0;
         while (i < node.items.length) {
-            const item = node.items[i];
+            item = node.items[i];
 
             // Check if this is a VAR with {1,1}
             if (item.type === 'VAR' && item.min === 1 && item.max === 1) {
                 // Count consecutive identical vars
-                let count = 1;
+                count = 1;
                 while (i + count < node.items.length) {
-                    const next = node.items[i + count];
+                    next = node.items[i + count];
                     if (next.type === 'VAR' && next.name === item.name &&
                         next.min === 1 && next.max === 1) {
                         count++;
@@ -293,9 +344,13 @@ function optimizeQuantifiers(node) {
 
                 // If we found consecutive identical vars, merge them
                 if (count > 1) {
-                    const merged = { ...item };
-                    merged.min = count;
-                    merged.max = count;
+                    merged = {
+                        type: item.type,
+                        name: item.name,
+                        min: count,
+                        max: count,
+                        reluctant: item.reluctant || false
+                    };
                     newItems.push(merged);
                     i += count;
                 } else {
@@ -315,7 +370,7 @@ function optimizeQuantifiers(node) {
         node.content = optimizeQuantifiers(node.content);
 
         // Extract inner node if content is SEQ with single item
-        let innerNode = null;
+        innerNode = null;
         if (node.content.type === 'VAR' || node.content.type === 'GROUP') {
             innerNode = node.content;
         } else if (node.content.type === 'SEQ' && node.content.items.length === 1) {
@@ -326,8 +381,8 @@ function optimizeQuantifiers(node) {
         // Only safe when at least one quantifier is fixed (min === max)
         if (innerNode && (node.min === node.max || innerNode.min === innerNode.max)) {
             // Calculate new quantifiers
-            const newMin = innerNode.min * node.min;
-            const newMax = innerNode.max * node.max;
+            newMin = innerNode.min * node.min;
+            newMax = innerNode.max * node.max;
 
             if (innerNode.type === 'VAR') {
                 // ((A{m,n}){p,q} → A{m*p, n*q}
@@ -335,7 +390,8 @@ function optimizeQuantifiers(node) {
                     type: 'VAR',
                     name: innerNode.name,
                     min: newMin,
-                    max: newMax
+                    max: newMax,
+                    reluctant: innerNode.reluctant || false
                 };
             } else if (innerNode.type === 'GROUP') {
                 // ((content){m,n}){p,q} → (content){m*p, n*q}
@@ -343,7 +399,8 @@ function optimizeQuantifiers(node) {
                     type: 'GROUP',
                     content: innerNode.content,
                     min: newMin,
-                    max: newMax
+                    max: newMax,
+                    reluctant: innerNode.reluctant || false
                 };
             }
         }
@@ -352,7 +409,9 @@ function optimizeQuantifiers(node) {
     }
 
     if (node.type === 'ALT') {
-        node.alternatives = node.alternatives.map(optimizeQuantifiers);
+        for (i = 0; i < node.alternatives.length; i++) {
+            node.alternatives[i] = optimizeQuantifiers(node.alternatives[i]);
+        }
         return node;
     }
 
@@ -573,40 +632,59 @@ function tokenize(str) {
 // ------ AST Parser ------
 
 function extractQuantifier(tokens, pos) {
-    if (tokens[pos.value]?.type === 'QUANT') {
-        const { min, max, reluctant } = tokens[pos.value];
+    var tok = tokens[pos.value];
+    if (tok && tok.type === 'QUANT') {
+        var min = tok.min;
+        var max = tok.max;
+        var reluctant = tok.reluctant || false;
         pos.value++;
-        return { min, max, reluctant: reluctant || false };
+        return { min: min, max: max, reluctant: reluctant };
     }
     return { min: 1, max: 1, reluctant: false };
 }
 
+// Helper: add variable name to array (or Set for test compatibility)
+function addVariable(variables, name) {
+    // Support both Set (for tests) and Array (for C-portable code)
+    if (variables.add) {
+        variables.add(name);
+    } else {
+        for (var i = 0; i < variables.length; i++) {
+            if (variables[i] === name) return;
+        }
+        variables.push(name);
+    }
+}
+
 function parseItem(tokens, pos, variables) {
-    const token = tokens[pos.value];
+    var token = tokens[pos.value];
+    var group, quant, nextTok;
 
     if (token.type === 'LPAREN') {
         pos.value++;
-        const group = parseSequence(tokens, pos, variables);
-        if (tokens[pos.value]?.type === 'RPAREN') pos.value++;
-        const { min, max, reluctant } = extractQuantifier(tokens, pos);
-        return { type: 'GROUP', content: group, min, max, reluctant };
+        group = parseSequence(tokens, pos, variables);
+        nextTok = tokens[pos.value];
+        if (nextTok && nextTok.type === 'RPAREN') pos.value++;
+        quant = extractQuantifier(tokens, pos);
+        return { type: 'GROUP', content: group, min: quant.min, max: quant.max, reluctant: quant.reluctant };
     }
 
     if (token.type === 'VAR') {
-        variables.add(token.name);
+        addVariable(variables, token.name);
         pos.value++;
-        const { min, max, reluctant } = extractQuantifier(tokens, pos);
-        return { type: 'VAR', name: token.name, min, max, reluctant };
+        quant = extractQuantifier(tokens, pos);
+        return { type: 'VAR', name: token.name, min: quant.min, max: quant.max, reluctant: quant.reluctant };
     }
 
-    throw new Error(`Internal error: Unexpected token type '${token.type}' at position ${pos.value}`);
+    throw new Error('Internal error: Unexpected token type \'' + token.type + '\' at position ' + pos.value);
 }
 
 function parseSequence(tokens, pos, variables) {
-    const items = [];
+    var items = [];
+    var token;
 
     while (pos.value < tokens.length) {
-        const token = tokens[pos.value];
+        token = tokens[pos.value];
 
         if (token.type === 'RPAREN') break;
         if (token.type === 'ALT') return handleAlternation(tokens, pos, items, variables);
@@ -614,32 +692,39 @@ function parseSequence(tokens, pos, variables) {
         items.push(parseItem(tokens, pos, variables));
     }
 
-    return { type: 'SEQ', items };
+    return { type: 'SEQ', items: items };
 }
 
 function handleAlternation(tokens, pos, currentItems, variables) {
-    const alternatives = [{ type: 'SEQ', items: [...currentItems] }];
+    // Copy currentItems to first alternative
+    var firstAltItems = [];
+    for (var k = 0; k < currentItems.length; k++) {
+        firstAltItems.push(currentItems[k]);
+    }
+    var alternatives = [{ type: 'SEQ', items: firstAltItems }];
     pos.value++; // skip '|'
 
+    var altItems, t, nextTok;
     while (pos.value < tokens.length) {
-        const altItems = [];
+        altItems = [];
 
         while (pos.value < tokens.length) {
-            const t = tokens[pos.value];
+            t = tokens[pos.value];
             if (t.type === 'RPAREN' || t.type === 'ALT') break;
             altItems.push(parseItem(tokens, pos, variables));
         }
 
         alternatives.push({ type: 'SEQ', items: altItems });
 
-        if (tokens[pos.value]?.type === 'ALT') {
+        nextTok = tokens[pos.value];
+        if (nextTok && nextTok.type === 'ALT') {
             pos.value++;
         } else {
             break;
         }
     }
 
-    return { type: 'ALT', alternatives };
+    return { type: 'ALT', alternatives: alternatives };
 }
 
 // ------ AST Utilities ------
@@ -652,49 +737,61 @@ function astEqual(a, b) {
     if (a.min !== b.min || a.max !== b.max) return false;
     if ((a.reluctant || false) !== (b.reluctant || false)) return false;
 
-    switch (a.type) {
-        case 'VAR':
-            return a.name === b.name;
-        case 'GROUP':
-            return astEqual(a.content, b.content);
-        case 'SEQ':
-            if (a.items.length !== b.items.length) return false;
-            for (let i = 0; i < a.items.length; i++) {
-                if (!astEqual(a.items[i], b.items[i])) return false;
-            }
-            return true;
-        case 'ALT':
-            if (a.alternatives.length !== b.alternatives.length) return false;
-            for (let i = 0; i < a.alternatives.length; i++) {
-                if (!astEqual(a.alternatives[i], b.alternatives[i])) return false;
-            }
-            return true;
+    var i;
+    if (a.type === 'VAR') {
+        return a.name === b.name;
+    }
+    if (a.type === 'GROUP') {
+        return astEqual(a.content, b.content);
+    }
+    if (a.type === 'SEQ') {
+        if (a.items.length !== b.items.length) return false;
+        for (i = 0; i < a.items.length; i++) {
+            if (!astEqual(a.items[i], b.items[i])) return false;
+        }
+        return true;
+    }
+    if (a.type === 'ALT') {
+        if (a.alternatives.length !== b.alternatives.length) return false;
+        for (i = 0; i < a.alternatives.length; i++) {
+            if (!astEqual(a.alternatives[i], b.alternatives[i])) return false;
+        }
+        return true;
     }
     return false;
+}
+
+/*
+ * Format quantifier suffix for astToString
+ */
+function quantStr(min, max, reluctant) {
+    var inf = (max === null || max === Infinity);
+    var r = reluctant ? '?' : '';
+    if (min === 1 && max === 1) return '';
+    if (min === 0 && max === 1) return '?' + r;
+    if (min === 0 && inf) return '*' + r;
+    if (min === 1 && inf) return '+' + r;
+    if (min === max) return '{' + min + '}' + r;
+    if (inf) return '{' + min + ',}' + r;
+    return '{' + min + ',' + max + '}' + r;
 }
 
 /*
  * Convert AST back to pattern string
  * parentType: parent node type for determining if parentheses are needed
  */
-function astToString(node, parentType = null) {
+function astToString(node, parentType) {
     if (!node) return '';
+    if (parentType === undefined) parentType = null;
 
-    // Format quantifier suffix
-    function quantStr(min, max, reluctant) {
-        const inf = (max === null || max === Infinity);
-        const r = reluctant ? '?' : '';
-        if (min === 1 && max === 1) return '';
-        if (min === 0 && max === 1) return '?' + r;
-        if (min === 0 && inf) return '*' + r;
-        if (min === 1 && inf) return '+' + r;
-        if (min === max) return `{${min}}` + r;
-        if (inf) return `{${min},}` + r;
-        return `{${min},${max}}` + r;
-    }
+    var i, parts, inner, altStr;
 
     if (node.type === 'SEQ') {
-        return node.items.map(item => astToString(item, 'SEQ')).join(' ');
+        parts = [];
+        for (i = 0; i < node.items.length; i++) {
+            parts.push(astToString(node.items[i], 'SEQ'));
+        }
+        return parts.join(' ');
     }
 
     if (node.type === 'VAR') {
@@ -702,12 +799,16 @@ function astToString(node, parentType = null) {
     }
 
     if (node.type === 'GROUP') {
-        const inner = astToString(node.content, 'GROUP');
+        inner = astToString(node.content, 'GROUP');
         return '( ' + inner + ' )' + quantStr(node.min, node.max, node.reluctant);
     }
 
     if (node.type === 'ALT') {
-        const altStr = node.alternatives.map(alt => astToString(alt, 'ALT')).join(' | ');
+        parts = [];
+        for (i = 0; i < node.alternatives.length; i++) {
+            parts.push(astToString(node.alternatives[i], 'ALT'));
+        }
+        altStr = parts.join(' | ');
         // Wrap in parentheses if inside SEQ to preserve precedence
         if (parentType === 'SEQ') {
             return '( ' + altStr + ' )';
@@ -723,27 +824,31 @@ function astToString(node, parentType = null) {
 function flattenAST(node, pattern, depth, varIdMap) {
     if (!node) return;
 
+    var i, varId, elem, groupStartIdx, groupEnd;
+    var altStart, altBranchStarts, altEndPositions, alt, altBranchStart;
+    var firstElemIdx, nextAltStart, afterAltIdx, endPos;
+
     if (node.type === 'SEQ') {
-        for (const item of node.items) {
-            flattenAST(item, pattern, depth, varIdMap);
+        for (i = 0; i < node.items.length; i++) {
+            flattenAST(node.items[i], pattern, depth, varIdMap);
         }
     } else if (node.type === 'VAR') {
-        const varId = varIdMap.get(node.name);
-        const elem = new PatternElement(varId);
+        varId = varIdMap[node.name];
+        elem = new PatternElement(varId);
         elem.min = node.min;
         elem.max = node.max;
         elem.depth = depth;
         elem.reluctant = node.reluctant || false;
         pattern.elements.push(elem);
     } else if (node.type === 'GROUP') {
-        const groupStartIdx = pattern.elements.length;
+        groupStartIdx = pattern.elements.length;
 
         // Flatten group content
         flattenAST(node.content, pattern, depth + 1, varIdMap);
 
         // Add group end marker only if this group has quantifier other than {1,1}
         if (node.min !== 1 || node.max !== 1) {
-            const groupEnd = new PatternElement(-2);  // -2 = #END
+            groupEnd = new PatternElement(-2);  // -2 = #END
             // GROUP_END uses parent depth for counting group iterations
             groupEnd.depth = depth;
             groupEnd.min = node.min;
@@ -754,18 +859,18 @@ function flattenAST(node, pattern, depth, varIdMap) {
         }
     } else if (node.type === 'ALT') {
         // ALT_START.next points to first alternative start
-        const altStart = new PatternElement(-1);  // -1 = #ALT
+        altStart = new PatternElement(-1);  // -1 = #ALT
         altStart.depth = depth;
         pattern.elements.push(altStart);
 
-        const altBranchStarts = [];  // Start index of each alternative
-        const altEndPositions = [];  // End index of each alternative
+        altBranchStarts = [];  // Start index of each alternative
+        altEndPositions = [];  // End index of each alternative
 
-        for (let i = 0; i < node.alternatives.length; i++) {
-            const alt = node.alternatives[i];
+        for (i = 0; i < node.alternatives.length; i++) {
+            alt = node.alternatives[i];
             if (!alt) continue;
 
-            const altBranchStart = pattern.elements.length;
+            altBranchStart = pattern.elements.length;
             altBranchStarts.push(altBranchStart);
 
             flattenAST(alt, pattern, depth + 1, varIdMap);
@@ -782,17 +887,18 @@ function flattenAST(node, pattern, depth, varIdMap) {
         }
 
         // Set jump on first element of each alternative (to next alternative start)
-        for (let i = 0; i < altBranchStarts.length - 1; i++) {
-            const firstElemIdx = altBranchStarts[i];
-            const nextAltStart = altBranchStarts[i + 1];
+        for (i = 0; i < altBranchStarts.length - 1; i++) {
+            firstElemIdx = altBranchStarts[i];
+            nextAltStart = altBranchStarts[i + 1];
             pattern.elements[firstElemIdx].jump = nextAltStart;
         }
         // Last alternative's first element has jump = -1 (already default)
 
         // All alternatives should point to the element after the alternation
         // If no next element, use -1 (pattern end)
-        const afterAltIdx = pattern.elements.length;
-        for (const endPos of altEndPositions) {
+        afterAltIdx = pattern.elements.length;
+        for (i = 0; i < altEndPositions.length; i++) {
+            endPos = altEndPositions[i];
             if (pattern.elements[endPos] && pattern.elements[endPos].next === -1) {
                 pattern.elements[endPos].next = afterAltIdx;
             }

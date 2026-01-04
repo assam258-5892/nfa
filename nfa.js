@@ -5,7 +5,7 @@
  * Global sequence counter for Lexical Order tracking
  * Each path gets a sequence number when created, preserving creation order
  */
-let _pathSeq = 0;
+var _pathSeq = 0;
 
 function resetPathSeq() {
     _pathSeq = 0;
@@ -17,60 +17,108 @@ function resetPathSeq() {
  * - paths: Array of {seq, path} objects for Lexical Order preservation
  */
 class Summary {
-    constructor(paths = [[]]) {
+    constructor(paths) {
+        if (paths === undefined) paths = [[]];
         this.aggregates = {};  // Future: { sum: 0, count: 0, first: null, last: null, min: null, max: null }
         // Convert plain arrays to {seq, path} objects if needed
-        this.paths = paths.map(p => {
+        this.paths = [];
+        for (var i = 0; i < paths.length; i++) {
+            var p = paths[i];
             if (Array.isArray(p)) {
-                return { seq: _pathSeq++, path: [...p] };
+                var pathCopy = [];
+                for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
+                this.paths.push({ seq: _pathSeq++, path: pathCopy });
+            } else {
+                var pathCopy2 = [];
+                for (var j = 0; j < p.path.length; j++) pathCopy2.push(p.path[j]);
+                this.paths.push({ seq: p.seq, path: pathCopy2 });
             }
-            return { seq: p.seq, path: [...p.path] };
-        });
+        }
     }
 
     clone() {
-        const s = new Summary([]);
-        s.paths = this.paths.map(p => ({ seq: p.seq, path: [...p.path] }));
-        s.aggregates = { ...this.aggregates };
+        var s = new Summary([]);
+        s.paths = [];
+        for (var i = 0; i < this.paths.length; i++) {
+            var p = this.paths[i];
+            var pathCopy = [];
+            for (var j = 0; j < p.path.length; j++) pathCopy.push(p.path[j]);
+            s.paths.push({ seq: p.seq, path: pathCopy });
+        }
+        var keys = Object.keys(this.aggregates);
+        for (var i = 0; i < keys.length; i++) {
+            s.aggregates[keys[i]] = this.aggregates[keys[i]];
+        }
         return s;
     }
 
     // Clone with new sequence numbers for forking (branch point)
     fork() {
-        const s = new Summary([]);
-        s.paths = this.paths.map(p => ({ seq: _pathSeq++, path: [...p.path] }));
-        s.aggregates = { ...this.aggregates };
+        var s = new Summary([]);
+        s.paths = [];
+        for (var i = 0; i < this.paths.length; i++) {
+            var p = this.paths[i];
+            var pathCopy = [];
+            for (var j = 0; j < p.path.length; j++) pathCopy.push(p.path[j]);
+            s.paths.push({ seq: _pathSeq++, path: pathCopy });
+        }
+        var keys = Object.keys(this.aggregates);
+        for (var i = 0; i < keys.length; i++) {
+            s.aggregates[keys[i]] = this.aggregates[keys[i]];
+        }
         return s;
     }
 
     withMatch(varId) {
-        const s = this.clone();
-        s.paths = s.paths.map(p => ({ seq: p.seq, path: [...p.path, varId] }));
+        var s = this.clone();
+        for (var i = 0; i < s.paths.length; i++) {
+            s.paths[i].path.push(varId);
+        }
         return s;
     }
 
     mergePaths(other) {
-        const existing = new Set(this.paths.map(p => p.path.join(',')));
-        for (const p of other.paths) {
-            const key = p.path.join(',');
-            if (!existing.has(key)) {
-                this.paths.push({ seq: p.seq, path: [...p.path] });
-                existing.add(key);
+        // Build existing set as object for O(1) lookup
+        var existing = {};
+        for (var i = 0; i < this.paths.length; i++) {
+            existing[this.paths[i].path.join(',')] = true;
+        }
+        for (var i = 0; i < other.paths.length; i++) {
+            var p = other.paths[i];
+            var key = p.path.join(',');
+            if (!existing[key]) {
+                var pathCopy = [];
+                for (var j = 0; j < p.path.length; j++) pathCopy.push(p.path[j]);
+                this.paths.push({ seq: p.seq, path: pathCopy });
+                existing[key] = true;
             }
         }
     }
 
     // Check if aggregates are equal (for Summary merge)
     aggregatesEqual(other) {
-        const keys1 = Object.keys(this.aggregates);
-        const keys2 = Object.keys(other.aggregates);
+        var keys1 = Object.keys(this.aggregates);
+        var keys2 = Object.keys(other.aggregates);
         if (keys1.length !== keys2.length) return false;
-        return keys1.every(k => this.aggregates[k] === other.aggregates[k]);
+        for (var i = 0; i < keys1.length; i++) {
+            var k = keys1[i];
+            if (this.aggregates[k] !== other.aggregates[k]) return false;
+        }
+        return true;
     }
 
     // Get paths sorted by sequence number (Lexical Order)
     getSortedPaths() {
-        return [...this.paths].sort((a, b) => a.seq - b.seq).map(p => p.path);
+        var sorted = [];
+        for (var i = 0; i < this.paths.length; i++) {
+            sorted.push(this.paths[i]);
+        }
+        sorted.sort(function(a, b) { return a.seq - b.seq; });
+        var result = [];
+        for (var i = 0; i < sorted.length; i++) {
+            result.push(sorted[i].path);
+        }
+        return result;
     }
 }
 
@@ -81,32 +129,44 @@ class Summary {
  * - summaries[]: Summary array (maintains creation order)
  */
 class MatchState {
-    constructor(elementIndex, counts = [], summaries = null) {
+    constructor(elementIndex, counts, summaries) {
+        if (counts === undefined) counts = [];
         this.elementIndex = elementIndex;
-        this.counts = [...counts];
-        this.summaries = summaries
-            ? summaries.map(s => s.clone())
-            : [new Summary([[]])];
+        this.counts = [];
+        for (var i = 0; i < counts.length; i++) this.counts.push(counts[i]);
+        if (summaries) {
+            this.summaries = [];
+            for (var i = 0; i < summaries.length; i++) {
+                this.summaries.push(summaries[i].clone());
+            }
+        } else {
+            this.summaries = [new Summary([[]])];
+        }
     }
 
     clone() {
-        return new MatchState(
-            this.elementIndex,
-            [...this.counts],
-            this.summaries
-        );
+        var countsCopy = [];
+        for (var i = 0; i < this.counts.length; i++) countsCopy.push(this.counts[i]);
+        return new MatchState(this.elementIndex, countsCopy, this.summaries);
     }
 
     // Fork with new sequence numbers for branch points (Lexical Order)
     fork() {
-        const s = new MatchState(this.elementIndex, [...this.counts], null);
-        s.summaries = this.summaries.map(sum => sum.fork());
+        var countsCopy = [];
+        for (var i = 0; i < this.counts.length; i++) countsCopy.push(this.counts[i]);
+        var s = new MatchState(this.elementIndex, countsCopy, null);
+        s.summaries = [];
+        for (var i = 0; i < this.summaries.length; i++) {
+            s.summaries.push(this.summaries[i].fork());
+        }
         return s;
     }
 
     withMatch(varId) {
-        const s = this.clone();
-        s.summaries = s.summaries.map(sum => sum.withMatch(varId));
+        var s = this.clone();
+        for (var i = 0; i < s.summaries.length; i++) {
+            s.summaries[i] = s.summaries[i].withMatch(varId);
+        }
         return s;
     }
 
@@ -116,9 +176,16 @@ class MatchState {
      * - Different aggregates → add as new summary
      */
     mergeSummaries(other) {
-        for (const otherSum of other.summaries) {
+        for (var i = 0; i < other.summaries.length; i++) {
+            var otherSum = other.summaries[i];
             // Find matching summary by aggregates
-            const match = this.summaries.find(s => s.aggregatesEqual(otherSum));
+            var match = null;
+            for (var j = 0; j < this.summaries.length; j++) {
+                if (this.summaries[j].aggregatesEqual(otherSum)) {
+                    match = this.summaries[j];
+                    break;
+                }
+            }
             if (match) {
                 match.mergePaths(otherSum);
             } else {
@@ -128,34 +195,53 @@ class MatchState {
     }
 
     // Backward compatibility: get all paths from all summaries (sorted by Lexical Order)
-    get matchedPaths() {
-        const allPaths = [];
-        for (const sum of this.summaries) {
-            allPaths.push(...sum.paths);
+    getMatchedPaths() {
+        var allPaths = [];
+        for (var i = 0; i < this.summaries.length; i++) {
+            var sum = this.summaries[i];
+            for (var j = 0; j < sum.paths.length; j++) {
+                allPaths.push(sum.paths[j]);
+            }
         }
         // Sort by sequence number to preserve Lexical Order
-        allPaths.sort((a, b) => a.seq - b.seq);
-        return allPaths.map(p => p.path);
+        allPaths.sort(function(a, b) { return a.seq - b.seq; });
+        var result = [];
+        for (var i = 0; i < allPaths.length; i++) {
+            result.push(allPaths[i].path);
+        }
+        return result;
     }
 
     // Get paths with sequence info for Lexical Order tracking
-    get matchedPathsWithSeq() {
-        const allPaths = [];
-        for (const sum of this.summaries) {
-            allPaths.push(...sum.paths);
+    getMatchedPathsWithSeq() {
+        var allPaths = [];
+        for (var i = 0; i < this.summaries.length; i++) {
+            var sum = this.summaries[i];
+            for (var j = 0; j < sum.paths.length; j++) {
+                allPaths.push(sum.paths[j]);
+            }
         }
         return allPaths;  // Array of {seq, path}
     }
 
+    // Getter for backward compatibility
+    get matchedPaths() {
+        return this.getMatchedPaths();
+    }
+
+    get matchedPathsWithSeq() {
+        return this.getMatchedPathsWithSeq();
+    }
+
     hash() {
-        return `${this.elementIndex}:${this.counts.join(',')}`;
+        return this.elementIndex + ':' + this.counts.join(',');
     }
 }
 
 /**
  * MatchContext: Group of states with same matchStart
  */
-let _ctxId = 0;
+var _ctxId = 0;
 
 class MatchContext {
     constructor(matchStart) {
@@ -165,22 +251,34 @@ class MatchContext {
         this.isCompleted = false;
         this.states = [];
         this.completedPaths = [];    // Array of {seq, path} for Lexical Order
-        this._pathSet = new Set();
+        this._pathSet = {};          // Object instead of Set for path dedup
         this._greedyFallback = null;  // Best path preserved for greedy fallback
     }
 
-    addCompletedPath(path, seq = Infinity) {
+    addCompletedPath(path, seq) {
+        if (seq === undefined) seq = Infinity;
         if (!path || path.length === 0) return;
-        const key = path.join(',');
-        if (!this._pathSet.has(key)) {
-            this._pathSet.add(key);
-            this.completedPaths.push({ seq, path: [this.id, ...path] });
+        var key = path.join(',');
+        if (!this._pathSet[key]) {
+            this._pathSet[key] = true;
+            var newPath = [this.id];
+            for (var i = 0; i < path.length; i++) newPath.push(path[i]);
+            this.completedPaths.push({ seq: seq, path: newPath });
         }
     }
 
     // Get completed paths sorted by Lexical Order (seq)
     getSortedCompletedPaths() {
-        return [...this.completedPaths].sort((a, b) => a.seq - b.seq).map(p => p.path);
+        var sorted = [];
+        for (var i = 0; i < this.completedPaths.length; i++) {
+            sorted.push(this.completedPaths[i]);
+        }
+        sorted.sort(function(a, b) { return a.seq - b.seq; });
+        var result = [];
+        for (var i = 0; i < sorted.length; i++) {
+            result.push(sorted[i].path);
+        }
+        return result;
     }
 }
 
@@ -207,16 +305,28 @@ class NFAExecutor {
 
     /**
      * Convert variable names to varIds using pattern.variables
+     * Returns object with varId as key for O(1) lookup (like Set)
      */
     toVarIds(varNames) {
-        const varIds = new Set();
-        for (const name of varNames) {
-            const idx = this.pattern.variables.indexOf(name);
+        var varIds = {};
+        for (var i = 0; i < varNames.length; i++) {
+            var name = varNames[i];
+            var idx = this.pattern.variables.indexOf(name);
             if (idx >= 0) {
-                varIds.add(idx);
+                varIds[idx] = true;
             }
         }
         return varIds;
+    }
+
+    // Helper: check if varId is in varIds object
+    hasVarId(varIds, varId) {
+        return varIds[varId] === true;
+    }
+
+    // Helper: get varIds count
+    varIdsSize(varIds) {
+        return Object.keys(varIds).length;
     }
 
     /**
@@ -224,60 +334,128 @@ class NFAExecutor {
      * @param {string[]} trueVarNames - Array of variable names that are true for this row
      */
     processRow(trueVarNames) {
-        const trueVars = this.toVarIds(trueVarNames);
+        var self = this;
+        var trueVars = this.toVarIds(trueVarNames);
         this.currentRow++;
-        const row = this.currentRow;
-        const logs = [];
-        const log = (msg, type = 'info') => logs.push({ message: msg, type });
-        const stateMerges = [];
+        var row = this.currentRow;
+        var logs = [];
+        function log(msg, type) {
+            if (type === undefined) type = 'info';
+            logs.push({ message: msg, type: type });
+        }
+        var stateMerges = [];
 
-        const trueVarNamesForLog = Array.from(trueVars).map(id => this.pattern.variables[id]);
-        log(`Processing row ${row}: [${trueVarNamesForLog.join(', ') || 'none'}]`);
+        var trueVarIds = Object.keys(trueVars);
+        var trueVarNamesForLog = [];
+        for (var i = 0; i < trueVarIds.length; i++) {
+            trueVarNamesForLog.push(self.pattern.variables[parseInt(trueVarIds[i])]);
+        }
+        log('Processing row ' + row + ': [' + (trueVarNamesForLog.join(', ') || 'none') + ']');
 
         // 1. Try to start new context
         this.tryStartNewContext(row, trueVars, log, stateMerges);
 
         // 2. Process existing contexts
-        const discardedStates = [];
-        const deadStates = [];
-        for (const ctx of this.contexts) {
+        var discardedStates = [];
+        var deadStates = [];
+        for (var i = 0; i < this.contexts.length; i++) {
+            var ctx = this.contexts[i];
             if (ctx.isCompleted || ctx.matchStart === row) continue;
-            const result = this.processContext(ctx, row, trueVars, log, stateMerges);
+            var result = this.processContext(ctx, row, trueVars, log, stateMerges);
             if (result) {
-                if (result.discardedStates) discardedStates.push(...result.discardedStates);
-                if (result.deadStates) deadStates.push(...result.deadStates);
+                if (result.discardedStates) {
+                    for (var j = 0; j < result.discardedStates.length; j++) {
+                        discardedStates.push(result.discardedStates[j]);
+                    }
+                }
+                if (result.deadStates) {
+                    for (var j = 0; j < result.deadStates.length; j++) {
+                        deadStates.push(result.deadStates[j]);
+                    }
+                }
             }
         }
 
         // 3. Context absorption
-        const absorptions = this.absorbContexts(log);
+        var absorptions = this.absorbContexts(log);
 
         // 4. Snapshot for history
         // Include contexts that have states, are completed, or have dead states in this row
-        const deadContextIds = new Set(deadStates.map(ds => ds.contextId));
-        const toVarNames = path => path.map(id => this.pattern.variables[id]);
-        const contextSnapshot = this.contexts
-            .filter(ctx => ctx.states.length > 0 || ctx.isCompleted || deadContextIds.has(ctx.id))
-            .map(ctx => ({
-                id: ctx.id,
-                matchStart: ctx.matchStart,
-                matchEnd: ctx.matchEnd,
-                isCompleted: ctx.isCompleted,
-                isDead: ctx.states.length === 0 && !ctx.isCompleted,
-                completedPaths: ctx.getSortedCompletedPaths().map(p => [p[0], ...toVarNames(p.slice(1))]),  // [ctxId, ...varNames]
-                states: ctx.states.map(s => ({
-                    elementIndex: s.elementIndex,
-                    counts: [...s.counts],
-                    matchedPaths: s.matchedPaths.map(p => toVarNames(p))  // Convert to var names
-                }))
-            }));
+        var deadContextIds = {};
+        for (var i = 0; i < deadStates.length; i++) {
+            deadContextIds[deadStates[i].contextId] = true;
+        }
 
-        this.history.push({ row, input: [...trueVars], contexts: contextSnapshot, absorptions, stateMerges, discardedStates, deadStates, logs });
+        function toVarNames(path) {
+            var result = [];
+            for (var i = 0; i < path.length; i++) {
+                result.push(self.pattern.variables[path[i]]);
+            }
+            return result;
+        }
+
+        var contextSnapshot = [];
+        for (var i = 0; i < this.contexts.length; i++) {
+            var ctx = this.contexts[i];
+            if (ctx.states.length > 0 || ctx.isCompleted || deadContextIds[ctx.id]) {
+                var completedPathsMapped = [];
+                var sortedPaths = ctx.getSortedCompletedPaths();
+                for (var j = 0; j < sortedPaths.length; j++) {
+                    var p = sortedPaths[j];
+                    var mapped = [p[0]];
+                    for (var k = 1; k < p.length; k++) {
+                        mapped.push(self.pattern.variables[p[k]]);
+                    }
+                    completedPathsMapped.push(mapped);
+                }
+
+                var statesMapped = [];
+                for (var j = 0; j < ctx.states.length; j++) {
+                    var s = ctx.states[j];
+                    var countsCopy = [];
+                    for (var k = 0; k < s.counts.length; k++) countsCopy.push(s.counts[k]);
+                    var pathsMapped = [];
+                    var matchedPaths = s.matchedPaths;
+                    for (var k = 0; k < matchedPaths.length; k++) {
+                        pathsMapped.push(toVarNames(matchedPaths[k]));
+                    }
+                    statesMapped.push({
+                        elementIndex: s.elementIndex,
+                        counts: countsCopy,
+                        matchedPaths: pathsMapped
+                    });
+                }
+
+                contextSnapshot.push({
+                    id: ctx.id,
+                    matchStart: ctx.matchStart,
+                    matchEnd: ctx.matchEnd,
+                    isCompleted: ctx.isCompleted,
+                    isDead: ctx.states.length === 0 && !ctx.isCompleted,
+                    completedPaths: completedPathsMapped,
+                    states: statesMapped
+                });
+            }
+        }
+
+        var inputCopy = [];
+        var trueVarKeys = Object.keys(trueVars);
+        for (var i = 0; i < trueVarKeys.length; i++) {
+            inputCopy.push(parseInt(trueVarKeys[i]));
+        }
+        this.history.push({ row: row, input: inputCopy, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs });
 
         // 5. Remove dead/completed contexts
-        this.contexts = this.contexts.filter(ctx => ctx.states.length > 0 && !ctx.isCompleted);
+        var aliveContexts = [];
+        for (var i = 0; i < this.contexts.length; i++) {
+            var ctx = this.contexts[i];
+            if (ctx.states.length > 0 && !ctx.isCompleted) {
+                aliveContexts.push(ctx);
+            }
+        }
+        this.contexts = aliveContexts;
 
-        return { row, contexts: contextSnapshot, absorptions, stateMerges, discardedStates, deadStates, logs };
+        return { row: row, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs };
     }
 
     /**
@@ -287,62 +465,58 @@ class NFAExecutor {
         if (this.pattern.elements.length === 0) return;
 
         // Initial state at element 0
-        const initCounts = new Array(this.pattern.maxDepth + 1).fill(0);
-        const initState = new MatchState(0, initCounts);
+        var initCounts = [];
+        for (var i = 0; i <= this.pattern.maxDepth; i++) initCounts.push(0);
+        var initState = new MatchState(0, initCounts);
 
         // Expand to wait positions (VAR or #ALT)
-        const waitStates = this.expandToWaitPositions([initState]);
+        var waitStates = this.expandToWaitPositions([initState]);
 
         // Find states that can consume input
-        const consumableStates = [];
-        for (const state of waitStates) {
+        var consumableStates = [];
+        for (var i = 0; i < waitStates.length; i++) {
+            var state = waitStates[i];
             if (state.elementIndex === -1) continue;
-            const elem = this.pattern.elements[state.elementIndex];
+            var elem = this.pattern.elements[state.elementIndex];
             if (!elem) continue;
 
-            if (elem.isVar() && trueVars.has(elem.varId)) {
+            if (elem.isVar() && this.hasVarId(trueVars, elem.varId)) {
                 consumableStates.push(state);
             } else if (elem.isAltStart()) {
-                // Check each alternative
-                let altIdx = elem.next;
-                while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
-                    const altElem = this.pattern.elements[altIdx];
-                    if (altElem && altElem.isVar() && trueVars.has(altElem.varId)) {
-                        const altState = state.clone();
-                        altState.elementIndex = altIdx;
-                        consumableStates.push(altState);
-                    }
-                    altIdx = altElem ? altElem.jump : -1;
-                }
+                // Check each alternative (including nested ALTs)
+                this.findConsumableAlternatives(state, elem, trueVars, consumableStates);
             }
         }
 
         if (consumableStates.length === 0) return;
 
         // Create new context
-        const ctx = new MatchContext(row);
+        var ctx = new MatchContext(row);
 
         // Consume input and generate next states
-        const { activeStates, completedStates } = this.consumeInput(consumableStates, trueVars, log, stateMerges, ctx.id);
+        var consumeResult = this.consumeInput(consumableStates, trueVars, log, stateMerges, ctx.id);
+        var activeStates = consumeResult.activeStates;
+        var completedStates = consumeResult.completedStates;
 
         // Expand active states to wait positions for next row
-        let nextWaitStates = this.expandToWaitPositions(activeStates);
+        var nextWaitStates = this.expandToWaitPositions(activeStates);
 
         // Filter out non-viable states (when no pattern variable matches)
-        const hasPatternMatch = trueVars.size > 0;
+        var hasPatternMatch = this.varIdsSize(trueVars) > 0;
         if (!hasPatternMatch) {
             nextWaitStates = this.filterNonViableStates(nextWaitStates, trueVars);
         }
 
         // Separate completed from active (use index map for order preservation)
-        const completedIndex = {};
-        for (let i = 0; i < completedStates.length; i++) {
+        var completedIndex = {};
+        for (var i = 0; i < completedStates.length; i++) {
             completedIndex[completedStates[i].hash()] = i;
         }
 
-        for (const state of nextWaitStates) {
+        for (var i = 0; i < nextWaitStates.length; i++) {
+            var state = nextWaitStates[i];
             if (state.elementIndex === -1) {
-                const hash = state.hash();
+                var hash = state.hash();
                 if (hash in completedIndex) {
                     completedStates[completedIndex[hash]].mergeSummaries(state);
                 } else {
@@ -358,27 +532,34 @@ class NFAExecutor {
         ctx.states = this.mergeStates(ctx.states, stateMerges, ctx.id);
 
         // Extract completed paths with Lexical Order (seq)
-        for (const state of completedStates) {
-            for (const p of state.matchedPathsWithSeq) {
+        for (var i = 0; i < completedStates.length; i++) {
+            var state = completedStates[i];
+            var pathsWithSeq = state.matchedPathsWithSeq;
+            for (var j = 0; j < pathsWithSeq.length; j++) {
+                var p = pathsWithSeq[j];
                 ctx.addCompletedPath(p.path, p.seq);
             }
         }
 
         // Set matchEnd based on actual path lengths (exclude ID prefix)
         if (ctx.completedPaths.length > 0) {
-            const maxLen = Math.max(...ctx.completedPaths.map(p => p.path.length - 1));
+            var maxLen = 0;
+            for (var i = 0; i < ctx.completedPaths.length; i++) {
+                var len = ctx.completedPaths[i].path.length - 1;
+                if (len > maxLen) maxLen = len;
+            }
             ctx.matchEnd = ctx.matchStart + maxLen - 1;
             if (ctx.states.length === 0) {
                 ctx.isCompleted = true;
-                log(`MATCH COMPLETE! rows ${ctx.matchStart}-${ctx.matchEnd}`, 'success');
+                log('MATCH COMPLETE! rows ' + ctx.matchStart + '-' + ctx.matchEnd, 'success');
             } else {
-                log(`Potential match at rows ${ctx.matchStart}-${ctx.matchEnd}, continuing...`, 'warning');
+                log('Potential match at rows ' + ctx.matchStart + '-' + ctx.matchEnd + ', continuing...', 'warning');
             }
         }
 
         if (ctx.states.length > 0 || ctx.isCompleted) {
             this.contexts.push(ctx);
-            log(`New context #${ctx.id} started at row ${row}`, 'success');
+            log('New context #' + ctx.id + ' started at row ' + row, 'success');
         }
     }
 
@@ -387,28 +568,33 @@ class NFAExecutor {
      * Returns { discardedStates, deadStates } for shorter match discards and mismatch deaths
      */
     processContext(ctx, row, trueVars, log, stateMerges) {
+        var self = this;
         // Consume input from current wait states
-        const { activeStates, completedStates, deadStates } = this.consumeInput(ctx.states, trueVars, log, stateMerges, ctx.id);
+        var consumeResult = this.consumeInput(ctx.states, trueVars, log, stateMerges, ctx.id);
+        var activeStates = consumeResult.activeStates;
+        var completedStates = consumeResult.completedStates;
+        var deadStates = consumeResult.deadStates;
 
         // Expand to next wait positions
-        let nextWaitStates = this.expandToWaitPositions(activeStates);
+        var nextWaitStates = this.expandToWaitPositions(activeStates);
 
         // Filter out non-viable states (when no pattern variable matches)
-        const hasPatternMatch = trueVars.size > 0;
+        var hasPatternMatch = this.varIdsSize(trueVars) > 0;
         if (!hasPatternMatch) {
             nextWaitStates = this.filterNonViableStates(nextWaitStates, trueVars);
         }
 
         // Separate completed from active (use index map for order preservation)
-        const completedIndex = {};
-        for (let i = 0; i < completedStates.length; i++) {
+        var completedIndex = {};
+        for (var i = 0; i < completedStates.length; i++) {
             completedIndex[completedStates[i].hash()] = i;
         }
 
         ctx.states = [];
-        for (const state of nextWaitStates) {
+        for (var i = 0; i < nextWaitStates.length; i++) {
+            var state = nextWaitStates[i];
             if (state.elementIndex === -1) {
-                const hash = state.hash();
+                var hash = state.hash();
                 if (hash in completedIndex) {
                     completedStates[completedIndex[hash]].mergeSummaries(state);
                 } else {
@@ -425,57 +611,76 @@ class NFAExecutor {
 
         // Discard shorter matches if longer matches are possible
         // But only if active states can actually progress with current input
-        const discardedStates = [];
-        const canProgressFurther = ctx.states.some(s => {
-            const elem = this.pattern.elements[s.elementIndex];
-            if (!elem) return false;
+        var discardedStates = [];
+        var canProgressFurther = false;
+        for (var i = 0; i < ctx.states.length; i++) {
+            var s = ctx.states[i];
+            var elem = this.pattern.elements[s.elementIndex];
+            if (!elem) continue;
             // Check if this state can actually consume current input
             if (elem.isVar()) {
-                return trueVars.has(elem.varId);
+                if (this.hasVarId(trueVars, elem.varId)) {
+                    canProgressFurther = true;
+                    break;
+                }
             } else if (elem.isAltStart()) {
                 // Check if any alternative can match
-                let altIdx = elem.next;
+                var altIdx = elem.next;
                 while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
-                    const altElem = this.pattern.elements[altIdx];
-                    if (altElem && altElem.isVar() && trueVars.has(altElem.varId)) {
-                        return true;
+                    var altElem = this.pattern.elements[altIdx];
+                    if (altElem && altElem.isVar() && this.hasVarId(trueVars, altElem.varId)) {
+                        canProgressFurther = true;
+                        break;
                     }
                     altIdx = altElem ? altElem.jump : -1;
                 }
+                if (canProgressFurther) break;
             }
-            return false;
-        });
+        }
 
-        if (completedStates.length > 0 && ctx.states.length > 0 && canProgressFurther && hasPatternMatch) {
+        // Pattern-level reluctant mode: if pattern.reluctant is true, don't defer completions
+        // (first match wins immediately, no greedy fallback)
+        var useGreedyMode = !this.pattern.reluctant;
+
+        if (useGreedyMode && completedStates.length > 0 && ctx.states.length > 0 && canProgressFurther && hasPatternMatch) {
             // Active states exist and input has pattern variables - can potentially match longer
             // Greedy: preserve best completion for fallback, replace if longer found
 
             // Collect all completed paths with their info (with seq for Lexical Order)
-            const allCompletedPaths = [];
-            for (const state of completedStates) {
-                for (const p of state.matchedPathsWithSeq) {
-                    allCompletedPaths.push(p);  // {seq, path}
+            var allCompletedPaths = [];
+            for (var i = 0; i < completedStates.length; i++) {
+                var state = completedStates[i];
+                var pathsWithSeq = state.matchedPathsWithSeq;
+                for (var j = 0; j < pathsWithSeq.length; j++) {
+                    allCompletedPaths.push(pathsWithSeq[j]);  // {seq, path}
                 }
             }
 
             // Select best path: longest first, keep Lexical Order (seq) for same length
             if (allCompletedPaths.length > 0) {
                 // Sort by length desc, then by seq asc
-                allCompletedPaths.sort((a, b) => {
+                allCompletedPaths.sort(function(a, b) {
                     if (b.path.length !== a.path.length) return b.path.length - a.path.length;
                     return a.seq - b.seq;
                 });
 
-                const bestPath = allCompletedPaths[0];
+                var bestPath = allCompletedPaths[0];
 
                 // Replace greedy fallback if new best is longer
                 if (!ctx._greedyFallback || bestPath.path.length > ctx._greedyFallback.path.length) {
-                    ctx._greedyFallback = { seq: bestPath.seq, path: [...bestPath.path] };
-                    log(`Greedy: updating fallback to: ${bestPath.path.map(id => this.pattern.variables[id]).join(' ')}`, 'warning');
+                    var pathCopy = [];
+                    for (var i = 0; i < bestPath.path.length; i++) pathCopy.push(bestPath.path[i]);
+                    ctx._greedyFallback = { seq: bestPath.seq, path: pathCopy };
+                    var varNames = [];
+                    for (var i = 0; i < bestPath.path.length; i++) {
+                        varNames.push(self.pattern.variables[bestPath.path[i]]);
+                    }
+                    log('Greedy: updating fallback to: ' + varNames.join(' '), 'warning');
                 }
 
                 // Mark all as discarded (they're just candidates, not final)
-                for (const p of allCompletedPaths) {
+                for (var i = 0; i < allCompletedPaths.length; i++) {
+                    var p = allCompletedPaths[i];
                     discardedStates.push({
                         contextId: ctx.id,
                         elementIndex: -1, // #FIN
@@ -492,8 +697,11 @@ class NFAExecutor {
                 ctx.addCompletedPath(ctx._greedyFallback.path, ctx._greedyFallback.seq);
                 ctx._greedyFallback = null;
             }
-            for (const state of completedStates) {
-                for (const p of state.matchedPathsWithSeq) {
+            for (var i = 0; i < completedStates.length; i++) {
+                var state = completedStates[i];
+                var pathsWithSeq = state.matchedPathsWithSeq;
+                for (var j = 0; j < pathsWithSeq.length; j++) {
+                    var p = pathsWithSeq[j];
                     ctx.addCompletedPath(p.path, p.seq);
                 }
             }
@@ -501,7 +709,11 @@ class NFAExecutor {
 
         // Update matchEnd based on actual path lengths (exclude ID prefix)
         if (ctx.completedPaths.length > 0) {
-            const maxLen = Math.max(...ctx.completedPaths.map(p => p.path.length - 1));
+            var maxLen = 0;
+            for (var i = 0; i < ctx.completedPaths.length; i++) {
+                var len = ctx.completedPaths[i].path.length - 1;
+                if (len > maxLen) maxLen = len;
+            }
             ctx.matchEnd = ctx.matchStart + maxLen - 1;
         }
 
@@ -509,15 +721,15 @@ class NFAExecutor {
         if (ctx.states.length === 0) {
             if (ctx.completedPaths.length > 0 || ctx.matchEnd >= 0) {
                 ctx.isCompleted = true;
-                log(`MATCH COMPLETE! rows ${ctx.matchStart}-${ctx.matchEnd}`, 'success');
+                log('MATCH COMPLETE! rows ' + ctx.matchStart + '-' + ctx.matchEnd, 'success');
             } else {
-                log(`Context #${ctx.id} died - no valid states`, 'error');
+                log('Context #' + ctx.id + ' died - no valid states', 'error');
             }
         } else if (ctx.completedPaths.length > 0) {
-            log(`Potential match at rows ${ctx.matchStart}-${ctx.matchEnd}, continuing...`, 'warning');
+            log('Potential match at rows ' + ctx.matchStart + '-' + ctx.matchEnd + ', continuing...', 'warning');
         }
 
-        return { discardedStates, deadStates };
+        return { discardedStates: discardedStates, deadStates: deadStates };
     }
 
     /**
@@ -528,26 +740,37 @@ class NFAExecutor {
      * When states have the same hash, paths are merged but order is preserved.
      */
     consumeInput(states, trueVars, log, stateMerges, ctxId) {
-        const activeStates = [];      // Array to preserve insertion order
-        const activeIndex = {};       // hash -> index in activeStates
-        const completedStates = [];   // Array to preserve insertion order
-        const completedIndex = {};    // hash -> index in completedStates
-        const deadStates = [];
+        var activeStates = [];      // Array to preserve insertion order
+        var activeIndex = {};       // hash -> index in activeStates
+        var completedStates = [];   // Array to preserve insertion order
+        var completedIndex = {};    // hash -> index in completedStates
+        var deadStates = [];
 
-        for (const state of states) {
-            const results = this.transition(state, trueVars, log);
+        for (var i = 0; i < states.length; i++) {
+            var state = states[i];
+            var results = this.transition(state, trueVars, log);
             if (results.length === 0) {
                 // State died - mismatch
+                var countsCopy = [];
+                for (var j = 0; j < state.counts.length; j++) countsCopy.push(state.counts[j]);
+                var pathsCopy = [];
+                var matchedPaths = state.matchedPaths;
+                for (var j = 0; j < matchedPaths.length; j++) {
+                    var pCopy = [];
+                    for (var k = 0; k < matchedPaths[j].length; k++) pCopy.push(matchedPaths[j][k]);
+                    pathsCopy.push(pCopy);
+                }
                 deadStates.push({
                     contextId: ctxId,
                     elementIndex: state.elementIndex,
-                    counts: [...state.counts],
-                    matchedPaths: state.matchedPaths.map(p => [...p]),
+                    counts: countsCopy,
+                    matchedPaths: pathsCopy,
                     reason: 'mismatch'
                 });
             }
-            for (const newState of results) {
-                const hash = newState.hash();
+            for (var j = 0; j < results.length; j++) {
+                var newState = results[j];
+                var hash = newState.hash();
                 if (newState.elementIndex === -1) {
                     // Completed state
                     if (hash in completedIndex) {
@@ -568,17 +791,17 @@ class NFAExecutor {
             }
         }
 
-        return { activeStates, completedStates, deadStates };
+        return { activeStates: activeStates, completedStates: completedStates, deadStates: deadStates };
     }
 
     /**
      * Core transition function: consume input at current position
      */
     transition(state, trueVars, log) {
-        const results = [];
+        var results = [];
         if (state.elementIndex === -1) return results;
 
-        const elem = this.pattern.elements[state.elementIndex];
+        var elem = this.pattern.elements[state.elementIndex];
         if (!elem) {
             results.push(new MatchState(-1, state.counts, state.summaries));
             return results;
@@ -605,13 +828,13 @@ class NFAExecutor {
      * Reluctant: prefer advancing (fewer matches) over staying
      */
     transitionVar(state, elem, trueVars, log, results) {
-        const matches = trueVars.has(elem.varId);
-        const count = state.counts[elem.depth] || 0;
-        const varName = this.pattern.variables[elem.varId];
+        var matches = this.hasVarId(trueVars, elem.varId);
+        var count = state.counts[elem.depth] || 0;
+        var varName = this.pattern.variables[elem.varId];
 
         if (matches) {
-            const newCount = count + 1;
-            const newState = state.withMatch(elem.varId);
+            var newCount = count + 1;
+            var newState = state.withMatch(elem.varId);
             newState.counts[elem.depth] = newCount;
 
             if (newCount >= elem.max) {
@@ -619,50 +842,50 @@ class NFAExecutor {
                 newState.counts[elem.depth] = 0;
                 newState.elementIndex = elem.next;
                 results.push(newState);
-                log(`${varName} matched (max=${elem.max}), advancing`);
+                log(varName + ' matched (max=' + elem.max + '), advancing');
             } else if (newCount >= elem.min && elem.reluctant) {
                 // Reluctant: min satisfied - prefer advance, but also stay
                 // Add advance first (higher priority for reluctant)
-                const advanceState = newState.clone();
+                var advanceState = newState.clone();
                 advanceState.counts[elem.depth] = 0;
                 advanceState.elementIndex = elem.next;
                 results.push(advanceState);
-                log(`${varName} matched (${newCount}), reluctant advancing`);
+                log(varName + ' matched (' + newCount + '), reluctant advancing');
 
                 // Also stay (lower priority) - fork for new seq
-                const stayState = newState.fork();
+                var stayState = newState.fork();
                 results.push(stayState);
-                log(`${varName} matched (${newCount}), reluctant also staying`);
+                log(varName + ' matched (' + newCount + '), reluctant also staying');
             } else {
                 // Greedy or min not yet satisfied: stay at VAR (can match more)
                 results.push(newState);
-                log(`${varName} matched (${newCount}), staying`);
+                log(varName + ' matched (' + newCount + '), staying');
 
                 // Greedy: also fork to advance if min satisfied
                 if (newCount >= elem.min && !elem.reluctant) {
-                    const advanceState = newState.fork();  // fork for new seq
-                    advanceState.counts[elem.depth] = 0;
-                    advanceState.elementIndex = elem.next;
-                    results.push(advanceState);
-                    log(`${varName} matched (${newCount}), greedy also advancing`);
+                    var advanceState2 = newState.fork();  // fork for new seq
+                    advanceState2.counts[elem.depth] = 0;
+                    advanceState2.elementIndex = elem.next;
+                    results.push(advanceState2);
+                    log(varName + ' matched (' + newCount + '), greedy also advancing');
                 }
             }
         } else {
             // No match
             if (count >= elem.min) {
                 // Min satisfied - advance without consuming
-                const newState = state.clone();
-                newState.counts[elem.depth] = 0;
-                newState.elementIndex = elem.next;
+                var newState2 = state.clone();
+                newState2.counts[elem.depth] = 0;
+                newState2.elementIndex = elem.next;
                 // Recursively transition to handle chained skips
-                const subResults = this.transition(newState, trueVars, log);
-                if (subResults.length > 0) {
-                    results.push(...subResults);
+                var subResults = this.transition(newState2, trueVars, log);
+                for (var i = 0; i < subResults.length; i++) {
+                    results.push(subResults[i]);
                 }
                 // If subResults is empty, the chain couldn't progress - don't add wait state
-                log(`${varName} not matched, min satisfied, advancing`);
+                log(varName + ' not matched, min satisfied, advancing');
             } else {
-                log(`${varName} not matched, count=${count}<min=${elem.min}, DEAD`);
+                log(varName + ' not matched, count=' + count + '<min=' + elem.min + ', DEAD');
             }
         }
     }
@@ -672,21 +895,23 @@ class NFAExecutor {
      * First alternative keeps original seq, subsequent alternatives fork for new seq
      */
     transitionAlt(state, elem, trueVars, log, results) {
-        let anyMatched = false;
-        let isFirst = true;
+        var anyMatched = false;
+        var isFirst = true;
 
         // Try each alternative
-        let altIdx = elem.next;
+        var altIdx = elem.next;
         while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
-            const altElem = this.pattern.elements[altIdx];
+            var altElem = this.pattern.elements[altIdx];
             // First alternative: clone (keep seq), others: fork (new seq)
-            const altState = isFirst ? state.clone() : state.fork();
+            var altState = isFirst ? state.clone() : state.fork();
             altState.elementIndex = altIdx;
 
-            const subResults = this.transition(altState, trueVars, log);
+            var subResults = this.transition(altState, trueVars, log);
             if (subResults.length > 0) {
                 anyMatched = true;
-                results.push(...subResults);
+                for (var i = 0; i < subResults.length; i++) {
+                    results.push(subResults[i]);
+                }
             }
 
             isFirst = false;
@@ -695,21 +920,23 @@ class NFAExecutor {
 
         // If nothing matched, try to exit group
         if (!anyMatched) {
-            const endElem = this.findGroupEnd(elem);
+            var endElem = this.findGroupEnd(elem);
             if (endElem) {
-                const count = state.counts[endElem.depth] || 0;
+                var count = state.counts[endElem.depth] || 0;
                 if (count >= endElem.min) {
-                    const exitState = state.clone();
+                    var exitState = state.clone();
                     exitState.counts[endElem.depth] = 0;
                     exitState.elementIndex = endElem.next;
                     // Recursively transition to handle chained skips
-                    const subResults = this.transition(exitState, trueVars, log);
-                    if (subResults.length > 0) {
-                        results.push(...subResults);
+                    var subResults2 = this.transition(exitState, trueVars, log);
+                    if (subResults2.length > 0) {
+                        for (var i = 0; i < subResults2.length; i++) {
+                            results.push(subResults2[i]);
+                        }
                     } else {
                         results.push(exitState);
                     }
-                    log(`No alternative matched, min=${endElem.min} satisfied, exiting group`);
+                    log('No alternative matched, min=' + endElem.min + ' satisfied, exiting group');
                 }
             }
         }
@@ -721,53 +948,53 @@ class NFAExecutor {
      * Reluctant: prefer exit (fewer iterations) over repeat
      */
     transitionGroupEnd(state, elem, log, results) {
-        const count = (state.counts[elem.depth] || 0) + 1;
+        var count = (state.counts[elem.depth] || 0) + 1;
 
         if (count < elem.min) {
             // Must repeat (both greedy and reluctant)
-            const repeatState = state.clone();
+            var repeatState = state.clone();
             repeatState.counts[elem.depth] = count;
             this.resetInnerCounts(repeatState, elem.depth);
             repeatState.elementIndex = elem.jump;
             results.push(repeatState);
-            log(`Group end: count=${count}<min=${elem.min}, must repeat`);
+            log('Group end: count=' + count + '<min=' + elem.min + ', must repeat');
         } else if (count >= elem.max) {
             // Max reached - must exit (both greedy and reluctant)
-            const exitState = state.clone();
+            var exitState = state.clone();
             exitState.counts[elem.depth] = 0;
             exitState.elementIndex = elem.next;
             results.push(exitState);
-            log(`Group end: count=${count}=max, exiting`);
+            log('Group end: count=' + count + '=max, exiting');
         } else if (elem.reluctant) {
             // Reluctant: prefer exit, but also allow repeat
-            const exitState = state.clone();
-            exitState.counts[elem.depth] = 0;
-            exitState.elementIndex = elem.next;
-            results.push(exitState);
-            log(`Group end: count=${count}, reluctant exiting`);
+            var exitState2 = state.clone();
+            exitState2.counts[elem.depth] = 0;
+            exitState2.elementIndex = elem.next;
+            results.push(exitState2);
+            log('Group end: count=' + count + ', reluctant exiting');
 
             // fork for second branch (new seq)
-            const repeatState = state.fork();
-            repeatState.counts[elem.depth] = count;
-            this.resetInnerCounts(repeatState, elem.depth);
-            repeatState.elementIndex = elem.jump;
-            results.push(repeatState);
-            log(`Group end: count=${count}, reluctant also repeating`);
+            var repeatState2 = state.fork();
+            repeatState2.counts[elem.depth] = count;
+            this.resetInnerCounts(repeatState2, elem.depth);
+            repeatState2.elementIndex = elem.jump;
+            results.push(repeatState2);
+            log('Group end: count=' + count + ', reluctant also repeating');
         } else {
             // Greedy: prefer repeat, but also allow exit
-            const repeatState = state.clone();
-            repeatState.counts[elem.depth] = count;
-            this.resetInnerCounts(repeatState, elem.depth);
-            repeatState.elementIndex = elem.jump;
-            results.push(repeatState);
-            log(`Group end: count=${count}, greedy repeating`);
+            var repeatState3 = state.clone();
+            repeatState3.counts[elem.depth] = count;
+            this.resetInnerCounts(repeatState3, elem.depth);
+            repeatState3.elementIndex = elem.jump;
+            results.push(repeatState3);
+            log('Group end: count=' + count + ', greedy repeating');
 
             // fork for second branch (new seq)
-            const exitState = state.fork();
-            exitState.counts[elem.depth] = 0;
-            exitState.elementIndex = elem.next;
-            results.push(exitState);
-            log(`Group end: count=${count}, greedy also exiting`);
+            var exitState3 = state.fork();
+            exitState3.counts[elem.depth] = 0;
+            exitState3.elementIndex = elem.next;
+            results.push(exitState3);
+            log('Group end: count=' + count + ', greedy also exiting');
         }
     }
 
@@ -777,14 +1004,15 @@ class NFAExecutor {
      * Uses array-based tracking to preserve insertion order (Lexical Order)
      */
     expandToWaitPositions(states) {
-        const result = [];
-        const seen = [];         // Array to preserve insertion order
-        const seenIndex = {};    // hash -> index in seen
-        const queue = [...states];
+        var result = [];
+        var seen = [];         // Array to preserve insertion order
+        var seenIndex = {};    // hash -> index in seen
+        var queue = [];
+        for (var i = 0; i < states.length; i++) queue.push(states[i]);
 
         while (queue.length > 0) {
-            const state = queue.shift();
-            const hash = state.hash();
+            var state = queue.shift();
+            var hash = state.hash();
 
             if (hash in seenIndex) {
                 seen[seenIndex[hash]].mergeSummaries(state);
@@ -798,9 +1026,9 @@ class NFAExecutor {
                 continue;
             }
 
-            const elem = this.pattern.elements[state.elementIndex];
+            var elem = this.pattern.elements[state.elementIndex];
             if (!elem) {
-                const fin = state.clone();
+                var fin = state.clone();
                 fin.elementIndex = -1;
                 result.push(fin);
                 continue;
@@ -808,17 +1036,17 @@ class NFAExecutor {
 
             if (elem.isFinish()) {
                 // #FIN - completed
-                const fin = state.clone();
-                fin.elementIndex = -1;
-                result.push(fin);
+                var fin2 = state.clone();
+                fin2.elementIndex = -1;
+                result.push(fin2);
             } else if (elem.isVar()) {
                 // Wait at VAR
                 result.push(state);
 
                 // Also explore skip path if min satisfied (fork for new seq)
-                const count = state.counts[elem.depth] || 0;
+                var count = state.counts[elem.depth] || 0;
                 if (count >= elem.min) {
-                    const skip = state.fork();
+                    var skip = state.fork();
                     skip.counts[elem.depth] = 0;
                     skip.elementIndex = elem.next;
                     queue.push(skip);
@@ -828,61 +1056,61 @@ class NFAExecutor {
                 result.push(state);
 
                 // Also explore skip if group min satisfied (fork for new seq)
-                const endElem = this.findGroupEnd(elem);
+                var endElem = this.findGroupEnd(elem);
                 if (endElem) {
-                    const count = state.counts[endElem.depth] || 0;
-                    if (count >= endElem.min) {
-                        const skip = state.fork();
-                        skip.counts[endElem.depth] = 0;
-                        skip.elementIndex = endElem.next;
-                        queue.push(skip);
+                    var count2 = state.counts[endElem.depth] || 0;
+                    if (count2 >= endElem.min) {
+                        var skip2 = state.fork();
+                        skip2.counts[endElem.depth] = 0;
+                        skip2.elementIndex = endElem.next;
+                        queue.push(skip2);
                     }
                 }
             } else if (elem.isGroupEnd()) {
                 // Process #END (epsilon)
                 // Greedy: repeat first, exit second
                 // Reluctant: exit first, repeat second
-                const count = (state.counts[elem.depth] || 0) + 1;
+                var count3 = (state.counts[elem.depth] || 0) + 1;
 
-                if (count < elem.min) {
+                if (count3 < elem.min) {
                     // Must repeat
-                    const repeat = state.clone();
-                    repeat.counts[elem.depth] = count;
+                    var repeat = state.clone();
+                    repeat.counts[elem.depth] = count3;
                     this.resetInnerCounts(repeat, elem.depth);
                     repeat.elementIndex = elem.jump;
                     queue.push(repeat);
-                } else if (count >= elem.max) {
+                } else if (count3 >= elem.max) {
                     // Must exit
-                    const exit = state.clone();
+                    var exit = state.clone();
                     exit.counts[elem.depth] = 0;
                     exit.elementIndex = elem.next;
                     queue.push(exit);
                 } else if (elem.reluctant) {
                     // Reluctant: exit first
-                    const exit = state.clone();
-                    exit.counts[elem.depth] = 0;
-                    exit.elementIndex = elem.next;
-                    queue.push(exit);
+                    var exit2 = state.clone();
+                    exit2.counts[elem.depth] = 0;
+                    exit2.elementIndex = elem.next;
+                    queue.push(exit2);
 
                     // fork for second branch (new seq)
-                    const repeat = state.fork();
-                    repeat.counts[elem.depth] = count;
-                    this.resetInnerCounts(repeat, elem.depth);
-                    repeat.elementIndex = elem.jump;
-                    queue.push(repeat);
+                    var repeat2 = state.fork();
+                    repeat2.counts[elem.depth] = count3;
+                    this.resetInnerCounts(repeat2, elem.depth);
+                    repeat2.elementIndex = elem.jump;
+                    queue.push(repeat2);
                 } else {
                     // Greedy: repeat first
-                    const repeat = state.clone();
-                    repeat.counts[elem.depth] = count;
-                    this.resetInnerCounts(repeat, elem.depth);
-                    repeat.elementIndex = elem.jump;
-                    queue.push(repeat);
+                    var repeat3 = state.clone();
+                    repeat3.counts[elem.depth] = count3;
+                    this.resetInnerCounts(repeat3, elem.depth);
+                    repeat3.elementIndex = elem.jump;
+                    queue.push(repeat3);
 
                     // fork for second branch (new seq)
-                    const exit = state.fork();
-                    exit.counts[elem.depth] = 0;
-                    exit.elementIndex = elem.next;
-                    queue.push(exit);
+                    var exit3 = state.fork();
+                    exit3.counts[elem.depth] = 0;
+                    exit3.elementIndex = elem.next;
+                    queue.push(exit3);
                 }
             }
         }
@@ -895,10 +1123,11 @@ class NFAExecutor {
      * Uses array-based tracking to preserve insertion order (Lexical Order)
      */
     mergeStates(states, stateMerges, ctxId) {
-        const merged = [];         // Array to preserve insertion order
-        const mergedIndex = {};    // hash -> index in merged
-        for (const state of states) {
-            const hash = state.hash();
+        var merged = [];         // Array to preserve insertion order
+        var mergedIndex = {};    // hash -> index in merged
+        for (var i = 0; i < states.length; i++) {
+            var state = states[i];
+            var hash = state.hash();
             if (hash in mergedIndex) {
                 merged[mergedIndex[hash]].mergeSummaries(state);
             } else {
@@ -913,9 +1142,9 @@ class NFAExecutor {
      * Find #END for #ALT
      */
     findGroupEnd(altElem) {
-        let idx = altElem.next;
+        var idx = altElem.next;
         while (idx >= 0 && idx < this.pattern.elements.length) {
-            const elem = this.pattern.elements[idx];
+            var elem = this.pattern.elements[idx];
             if (elem.isGroupEnd()) return elem;
             idx = elem.next;
         }
@@ -926,7 +1155,7 @@ class NFAExecutor {
      * Reset inner counts
      */
     resetInnerCounts(state, depth) {
-        for (let d = depth + 1; d < state.counts.length; d++) {
+        for (var d = depth + 1; d < state.counts.length; d++) {
             state.counts[d] = 0;
         }
     }
@@ -936,48 +1165,94 @@ class NFAExecutor {
      * States at #ALT or VAR that can't progress AND can't exit
      */
     filterNonViableStates(states, trueVars) {
-        return states.filter(state => {
-            if (state.elementIndex === -1) return true;
+        var result = [];
+        for (var i = 0; i < states.length; i++) {
+            var state = states[i];
+            if (state.elementIndex === -1) {
+                result.push(state);
+                continue;
+            }
 
-            const elem = this.pattern.elements[state.elementIndex];
-            if (!elem) return true;
+            var elem = this.pattern.elements[state.elementIndex];
+            if (!elem) {
+                result.push(state);
+                continue;
+            }
 
             if (elem.isAltStart()) {
                 // Can any alternative match?
-                const canMatch = this.canAltMatch(elem, trueVars);
-                if (canMatch) return true;
+                var canMatch = this.canAltMatch(elem, trueVars);
+                if (canMatch) {
+                    result.push(state);
+                    continue;
+                }
 
                 // Can we exit the group?
-                const endElem = this.findGroupEnd(elem);
+                var endElem = this.findGroupEnd(elem);
                 if (endElem) {
-                    const count = state.counts[endElem.depth] || 0;
-                    return count >= endElem.min;
+                    var count = state.counts[endElem.depth] || 0;
+                    if (count >= endElem.min) {
+                        result.push(state);
+                    }
                 }
-                return false;
             } else if (elem.isVar()) {
                 // Can we match this VAR?
-                if (trueVars.has(elem.varId)) return true;
+                if (this.hasVarId(trueVars, elem.varId)) {
+                    result.push(state);
+                    continue;
+                }
 
                 // Can we skip this VAR?
-                const count = state.counts[elem.depth] || 0;
-                return count >= elem.min;
+                var count2 = state.counts[elem.depth] || 0;
+                if (count2 >= elem.min) {
+                    result.push(state);
+                }
+            } else {
+                result.push(state);
             }
-
-            return true;
-        });
+        }
+        return result;
     }
 
     /**
-     * Check if any alternative in a group can match the input
+     * Find consumable alternatives from an #ALT element (recursive for nested ALTs)
+     */
+    findConsumableAlternatives(state, altElem, trueVars, consumableStates) {
+        var altIdx = altElem.next;
+        while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
+            var elem = this.pattern.elements[altIdx];
+            if (!elem) break;
+
+            if (elem.isVar() && this.hasVarId(trueVars, elem.varId)) {
+                var altState = state.clone();
+                altState.elementIndex = altIdx;
+                consumableStates.push(altState);
+            } else if (elem.isAltStart()) {
+                // Nested ALT - recurse into it
+                this.findConsumableAlternatives(state, elem, trueVars, consumableStates);
+            }
+            altIdx = elem.jump;
+        }
+    }
+
+    /**
+     * Check if any alternative in a group can match the input (recursive for nested ALTs)
      */
     canAltMatch(altElem, trueVars) {
-        let altIdx = altElem.next;
+        var altIdx = altElem.next;
         while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
-            const elem = this.pattern.elements[altIdx];
-            if (elem && elem.isVar() && trueVars.has(elem.varId)) {
+            var elem = this.pattern.elements[altIdx];
+            if (!elem) break;
+
+            if (elem.isVar() && this.hasVarId(trueVars, elem.varId)) {
                 return true;
+            } else if (elem.isAltStart()) {
+                // Nested ALT - recurse into it
+                if (this.canAltMatch(elem, trueVars)) {
+                    return true;
+                }
             }
-            altIdx = elem ? elem.jump : -1;
+            altIdx = elem.jump;
         }
         return false;
     }
@@ -986,51 +1261,97 @@ class NFAExecutor {
      * Context absorption
      */
     absorbContexts(log) {
-        const absorptions = [];
+        var absorptions = [];
         if (this.contexts.length <= 1) return absorptions;
 
-        this.contexts.sort((a, b) => a.matchStart - b.matchStart);
-        const absorbed = new Set();
+        this.contexts.sort(function(a, b) { return a.matchStart - b.matchStart; });
+        var absorbed = {};  // index -> true
 
-        for (let i = 0; i < this.contexts.length; i++) {
-            if (absorbed.has(i)) continue;
-            const earlier = this.contexts[i];
+        for (var i = 0; i < this.contexts.length; i++) {
+            if (absorbed[i]) continue;
+            var earlier = this.contexts[i];
             if (earlier.isCompleted) continue;
 
-            for (let j = i + 1; j < this.contexts.length; j++) {
-                if (absorbed.has(j)) continue;
-                const later = this.contexts[j];
+            for (var j = i + 1; j < this.contexts.length; j++) {
+                if (absorbed[j]) continue;
+                var later = this.contexts[j];
                 if (later.isCompleted) continue;
 
-                const canAbsorb = later.states.every(ls =>
-                    earlier.states.some(es => {
-                        if (es.elementIndex !== ls.elementIndex) return false;
-                        const elem = this.pattern.elements[es.elementIndex];
-                        if (!elem) return true;
-                        if (elem.max === Infinity) {
-                            return es.counts.every((c, d) => (c || 0) >= (ls.counts[d] || 0));
+                // Check if all later states can be absorbed by earlier states
+                var canAbsorb = true;
+                for (var li = 0; li < later.states.length; li++) {
+                    var ls = later.states[li];
+                    var found = false;
+                    for (var ei = 0; ei < earlier.states.length; ei++) {
+                        var es = earlier.states[ei];
+                        if (es.elementIndex !== ls.elementIndex) continue;
+                        var elem = this.pattern.elements[es.elementIndex];
+                        if (!elem) {
+                            found = true;
+                            break;
                         }
-                        return es.counts.every((c, d) => (c || 0) === (ls.counts[d] || 0));
-                    })
-                );
+                        var countsMatch = true;
+                        if (elem.max === Infinity) {
+                            for (var d = 0; d < es.counts.length; d++) {
+                                if ((es.counts[d] || 0) < (ls.counts[d] || 0)) {
+                                    countsMatch = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            for (var d = 0; d < es.counts.length; d++) {
+                                if ((es.counts[d] || 0) !== (ls.counts[d] || 0)) {
+                                    countsMatch = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (countsMatch) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        canAbsorb = false;
+                        break;
+                    }
+                }
 
                 if (canAbsorb && later.states.length > 0) {
-                    absorbed.add(j);
+                    absorbed[j] = true;
+                    var statesCopy = [];
+                    for (var si = 0; si < later.states.length; si++) {
+                        var s = later.states[si];
+                        var countsCopy = [];
+                        for (var ci = 0; ci < s.counts.length; ci++) countsCopy.push(s.counts[ci]);
+                        var pathsCopy = [];
+                        var matchedPaths = s.matchedPaths;
+                        for (var pi = 0; pi < matchedPaths.length; pi++) {
+                            var pCopy = [];
+                            for (var pk = 0; pk < matchedPaths[pi].length; pk++) pCopy.push(matchedPaths[pi][pk]);
+                            pathsCopy.push(pCopy);
+                        }
+                        statesCopy.push({
+                            elementIndex: s.elementIndex,
+                            counts: countsCopy,
+                            matchedPaths: pathsCopy
+                        });
+                    }
                     absorptions.push({
                         absorbedId: later.id,
                         byId: earlier.id,
-                        states: later.states.map(s => ({
-                            elementIndex: s.elementIndex,
-                            counts: [...s.counts],
-                            matchedPaths: s.matchedPaths.map(p => [...p])
-                        }))
+                        states: statesCopy
                     });
-                    log(`Context #${later.id} absorbed by #${earlier.id}`, 'warning');
+                    log('Context #' + later.id + ' absorbed by #' + earlier.id, 'warning');
                 }
             }
         }
 
-        this.contexts = this.contexts.filter((_, i) => !absorbed.has(i));
+        var remaining = [];
+        for (var i = 0; i < this.contexts.length; i++) {
+            if (!absorbed[i]) remaining.push(this.contexts[i]);
+        }
+        this.contexts = remaining;
         return absorptions;
     }
 
@@ -1039,25 +1360,27 @@ class NFAExecutor {
      * @param {string[]} trueVarNames - Array of variable names
      */
     getStartStates(trueVarNames) {
-        const trueVars = this.toVarIds(trueVarNames);
+        var trueVars = this.toVarIds(trueVarNames);
         if (this.pattern.elements.length === 0) return [];
-        const initCounts = new Array(this.pattern.maxDepth + 1).fill(0);
-        const initState = new MatchState(0, initCounts);
-        const waitStates = this.expandToWaitPositions([initState]);
+        var initCounts = [];
+        for (var i = 0; i <= this.pattern.maxDepth; i++) initCounts.push(0);
+        var initState = new MatchState(0, initCounts);
+        var waitStates = this.expandToWaitPositions([initState]);
 
-        const valid = [];
-        for (const state of waitStates) {
+        var valid = [];
+        for (var i = 0; i < waitStates.length; i++) {
+            var state = waitStates[i];
             if (state.elementIndex === -1) continue;
-            const elem = this.pattern.elements[state.elementIndex];
+            var elem = this.pattern.elements[state.elementIndex];
             if (!elem) continue;
-            if (elem.isVar() && trueVars.has(elem.varId)) {
+            if (elem.isVar() && this.hasVarId(trueVars, elem.varId)) {
                 valid.push(state);
             } else if (elem.isAltStart()) {
-                let altIdx = elem.next;
+                var altIdx = elem.next;
                 while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
-                    const altElem = this.pattern.elements[altIdx];
-                    if (altElem && altElem.isVar() && trueVars.has(altElem.varId)) {
-                        const altState = state.clone();
+                    var altElem = this.pattern.elements[altIdx];
+                    if (altElem && altElem.isVar() && this.hasVarId(trueVars, altElem.varId)) {
+                        var altState = state.clone();
                         altState.elementIndex = altIdx;
                         valid.push(altState);
                     }
