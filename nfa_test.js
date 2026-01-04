@@ -658,6 +658,77 @@ if (runTest(
     true  // Should match with path [A B]
 )) passed++; else failed++;
 
+// ============== RELUCTANT Quantifier Tests ==============
+// Reluctant (minimal matching): prefer shorter matches
+
+// Test 31: Reluctant VAR - A+? B should prefer minimal A's
+// With A A A B input, greedy A+ would match A A A, reluctant A+? should prefer A
+if (runTest(
+    'Reluctant VAR: A+? B - prefer minimal A',
+    'A+? B',
+    [
+        ['A'],      // Row 0: A
+        ['A'],      // Row 1: A
+        ['A'],      // Row 2: A
+        ['B']       // Row 3: B
+    ],
+    true  // Should match, but with minimal A's
+)) passed++; else failed++;
+
+// Test 32: Reluctant GROUP - (A B)+? C should prefer minimal iterations
+if (runTest(
+    'Reluctant GROUP: (A B)+? C - prefer minimal iterations',
+    '(A B)+? C',
+    [
+        ['A'],      // Row 0: A
+        ['B'],      // Row 1: B (first AB complete)
+        ['A'],      // Row 2: A
+        ['B'],      // Row 3: B (second AB complete)
+        ['C']       // Row 4: C
+    ],
+    true  // Should match with first (A B) then C
+)) passed++; else failed++;
+
+// Test 33: Mixed greedy and reluctant - A+ B*? C
+if (runTest(
+    'Mixed: A+ B*? C - greedy A+, reluctant B*?',
+    'A+ B*? C',
+    [
+        ['A'],      // Row 0: A
+        ['A'],      // Row 1: A
+        ['B'],      // Row 2: B
+        ['B'],      // Row 3: B
+        ['C']       // Row 4: C
+    ],
+    true  // A+ greedy, B*? reluctant
+)) passed++; else failed++;
+
+// Test 34: Reluctant with min - A{2,}? B
+if (runTest(
+    'Reluctant with min: A{2,}? B - at least 2 A, prefer minimum',
+    'A{2,}? B',
+    [
+        ['A'],      // Row 0: A (count=1)
+        ['A'],      // Row 1: A (count=2, min satisfied)
+        ['A'],      // Row 2: A (count=3)
+        ['B']       // Row 3: B
+    ],
+    true  // Must have at least 2 A's
+)) passed++; else failed++;
+
+// Test 35: Reluctant group - (A | B)+? C
+if (runTest(
+    'Reluctant alternation group: (A | B)+? C',
+    '(A | B)+? C',
+    [
+        ['A'],      // Row 0: A (first match)
+        ['B'],      // Row 1: B (second match)
+        ['A'],      // Row 2: A (third match)
+        ['C']       // Row 3: C
+    ],
+    true
+)) passed++; else failed++;
+
 // Summary
 console.log('\n' + '='.repeat(60));
 console.log(`TEST SUMMARY: ${passed} passed, ${failed} failed`);

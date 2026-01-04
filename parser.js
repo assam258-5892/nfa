@@ -30,6 +30,7 @@ class PatternElement {
         this.max = 1;               // Maximum repetitions (Infinity for *)
         this.next = -1;             // Next element index (-1 = end)
         this.jump = -1;             // GROUP_END: loop back / VAR in ALT: next alternative
+        this.reluctant = false;     // Reluctant quantifier (minimal matching)
     }
 
     // Helper methods to check element type
@@ -374,7 +375,6 @@ function optimizeQuantifiers(node) {
  *   - Anchors: ^ $ (partition boundaries)
  *   - Exclusion: {- -} (output exclusion)
  *   - PERMUTE: PERMUTE(A,B,C) (all permutations)
- *   - Reluctant quantifiers: *? +? ?? {n,m}? (minimal matching)
  */
 function tokenize(str) {
     const tokens = [];
@@ -418,6 +418,14 @@ function tokenize(str) {
             i++;
         }
         else if (c === '?' || c === '*' || c === '+' || c === '{') {
+            // Check if ? is a reluctant modifier for a previous quantifier
+            if (c === '?' && lastToken === 'QUANT') {
+                // Make the previous quantifier reluctant
+                tokens[tokens.length - 1].reluctant = true;
+                i++;
+                continue;
+            }
+
             // Quantifiers must follow VAR or RPAREN
             if (lastToken !== 'VAR' && lastToken !== 'RPAREN') {
                 const quantDesc = c === '{' ? '{n,m}' : c;
@@ -425,17 +433,17 @@ function tokenize(str) {
             }
 
             if (c === '?') {
-                tokens.push({ type: 'QUANT', min: 0, max: 1 });
+                tokens.push({ type: 'QUANT', min: 0, max: 1, reluctant: false });
                 lastToken = 'QUANT';
                 i++;
             }
             else if (c === '*') {
-                tokens.push({ type: 'QUANT', min: 0, max: Infinity });
+                tokens.push({ type: 'QUANT', min: 0, max: Infinity, reluctant: false });
                 lastToken = 'QUANT';
                 i++;
             }
             else if (c === '+') {
-                tokens.push({ type: 'QUANT', min: 1, max: Infinity });
+                tokens.push({ type: 'QUANT', min: 1, max: Infinity, reluctant: false });
                 lastToken = 'QUANT';
                 i++;
             }
@@ -504,7 +512,13 @@ function tokenize(str) {
                     }
                 }
 
-                tokens.push({ type: 'QUANT', min, max });
+                // Check for reluctant modifier after {n,m}
+                let reluctant = false;
+                if (str[j + 1] === '?') {
+                    reluctant = true;
+                    j++;
+                }
+                tokens.push({ type: 'QUANT', min, max, reluctant });
                 lastToken = 'QUANT';
                 i = j + 1;
             }
@@ -560,11 +574,11 @@ function tokenize(str) {
 
 function extractQuantifier(tokens, pos) {
     if (tokens[pos.value]?.type === 'QUANT') {
-        const { min, max } = tokens[pos.value];
+        const { min, max, reluctant } = tokens[pos.value];
         pos.value++;
-        return { min, max };
+        return { min, max, reluctant: reluctant || false };
     }
-    return { min: 1, max: 1 };
+    return { min: 1, max: 1, reluctant: false };
 }
 
 function parseItem(tokens, pos, variables) {
@@ -574,15 +588,15 @@ function parseItem(tokens, pos, variables) {
         pos.value++;
         const group = parseSequence(tokens, pos, variables);
         if (tokens[pos.value]?.type === 'RPAREN') pos.value++;
-        const { min, max } = extractQuantifier(tokens, pos);
-        return { type: 'GROUP', content: group, min, max };
+        const { min, max, reluctant } = extractQuantifier(tokens, pos);
+        return { type: 'GROUP', content: group, min, max, reluctant };
     }
 
     if (token.type === 'VAR') {
         variables.add(token.name);
         pos.value++;
-        const { min, max } = extractQuantifier(tokens, pos);
-        return { type: 'VAR', name: token.name, min, max };
+        const { min, max, reluctant } = extractQuantifier(tokens, pos);
+        return { type: 'VAR', name: token.name, min, max, reluctant };
     }
 
     throw new Error(`Internal error: Unexpected token type '${token.type}' at position ${pos.value}`);
@@ -636,6 +650,7 @@ function handleAlternation(tokens, pos, currentItems, variables) {
 function astEqual(a, b) {
     if (a.type !== b.type) return false;
     if (a.min !== b.min || a.max !== b.max) return false;
+    if ((a.reluctant || false) !== (b.reluctant || false)) return false;
 
     switch (a.type) {
         case 'VAR':
@@ -666,15 +681,16 @@ function astToString(node, parentType = null) {
     if (!node) return '';
 
     // Format quantifier suffix
-    function quantStr(min, max) {
+    function quantStr(min, max, reluctant) {
         const inf = (max === null || max === Infinity);
+        const r = reluctant ? '?' : '';
         if (min === 1 && max === 1) return '';
-        if (min === 0 && max === 1) return '?';
-        if (min === 0 && inf) return '*';
-        if (min === 1 && inf) return '+';
-        if (min === max) return `{${min}}`;
-        if (inf) return `{${min},}`;
-        return `{${min},${max}}`;
+        if (min === 0 && max === 1) return '?' + r;
+        if (min === 0 && inf) return '*' + r;
+        if (min === 1 && inf) return '+' + r;
+        if (min === max) return `{${min}}` + r;
+        if (inf) return `{${min},}` + r;
+        return `{${min},${max}}` + r;
     }
 
     if (node.type === 'SEQ') {
@@ -682,12 +698,12 @@ function astToString(node, parentType = null) {
     }
 
     if (node.type === 'VAR') {
-        return node.name + quantStr(node.min, node.max);
+        return node.name + quantStr(node.min, node.max, node.reluctant);
     }
 
     if (node.type === 'GROUP') {
         const inner = astToString(node.content, 'GROUP');
-        return '( ' + inner + ' )' + quantStr(node.min, node.max);
+        return '( ' + inner + ' )' + quantStr(node.min, node.max, node.reluctant);
     }
 
     if (node.type === 'ALT') {
@@ -717,6 +733,7 @@ function flattenAST(node, pattern, depth, varIdMap) {
         elem.min = node.min;
         elem.max = node.max;
         elem.depth = depth;
+        elem.reluctant = node.reluctant || false;
         pattern.elements.push(elem);
     } else if (node.type === 'GROUP') {
         const groupStartIdx = pattern.elements.length;
@@ -732,6 +749,7 @@ function flattenAST(node, pattern, depth, varIdMap) {
             groupEnd.min = node.min;
             groupEnd.max = node.max;
             groupEnd.jump = groupStartIdx;
+            groupEnd.reluctant = node.reluctant || false;
             pattern.elements.push(groupEnd);
         }
     } else if (node.type === 'ALT') {

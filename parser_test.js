@@ -61,16 +61,16 @@ assertEqual(tokens[0], {type:'VAR', name:'A'}, '1.1a First token is VAR:A');
 // 1.2 Quantifiers
 tokens = tokenize('A+ B* C?');
 assertEqual(tokens.length, 6, '1.2 Quantifiers: A+ B* C? -> 6 tokens');
-assertEqual(tokens[1], {type:'QUANT', min:1, max:Infinity}, '1.2a + -> {1,Inf}');
-assertEqual(tokens[3], {type:'QUANT', min:0, max:Infinity}, '1.2b * -> {0,Inf}');
-assertEqual(tokens[5], {type:'QUANT', min:0, max:1}, '1.2c ? -> {0,1}');
+assertEqual(tokens[1], {type:'QUANT', min:1, max:Infinity, reluctant:false}, '1.2a + -> {1,Inf}');
+assertEqual(tokens[3], {type:'QUANT', min:0, max:Infinity, reluctant:false}, '1.2b * -> {0,Inf}');
+assertEqual(tokens[5], {type:'QUANT', min:0, max:1, reluctant:false}, '1.2c ? -> {0,1}');
 
 // 1.3 Braced quantifiers
 tokens = tokenize('A{3} B{2,5} C{2,} D{,3}');
-assertEqual(tokens[1], {type:'QUANT', min:3, max:3}, '1.3a {3} -> {3,3}');
-assertEqual(tokens[3], {type:'QUANT', min:2, max:5}, '1.3b {2,5} -> {2,5}');
-assertEqual(tokens[5], {type:'QUANT', min:2, max:Infinity}, '1.3c {2,} -> {2,Inf}');
-assertEqual(tokens[7], {type:'QUANT', min:0, max:3}, '1.3d {,3} -> {0,3}');
+assertEqual(tokens[1], {type:'QUANT', min:3, max:3, reluctant:false}, '1.3a {3} -> {3,3}');
+assertEqual(tokens[3], {type:'QUANT', min:2, max:5, reluctant:false}, '1.3b {2,5} -> {2,5}');
+assertEqual(tokens[5], {type:'QUANT', min:2, max:Infinity, reluctant:false}, '1.3c {2,} -> {2,Inf}');
+assertEqual(tokens[7], {type:'QUANT', min:0, max:3, reluctant:false}, '1.3d {,3} -> {0,3}');
 
 // 1.4 Parentheses and alternation
 tokens = tokenize('(A | B)');
@@ -226,6 +226,65 @@ assertEqual(pattern.elements.length > 0, true, '6.2 Optimized pattern compiles')
 // 6.3 maxDepth
 pattern = parsePattern('((A)+)+');
 assertEqual(pattern.maxDepth >= 2, true, '6.3 Nested groups have maxDepth >= 2');
+
+// ============================================================
+// 7. Reluctant Quantifier Tests
+// ============================================================
+section('7. Reluctant Quantifiers');
+
+// 7.1 Tokenizer: +?
+tokens = tokenize('A+?');
+assertEqual(tokens.length, 2, '7.1a A+? -> 2 tokens');
+assertEqual(tokens[1], {type:'QUANT', min:1, max:Infinity, reluctant:true}, '7.1b +? -> {1,Inf,reluctant}');
+
+// 7.2 Tokenizer: *?
+tokens = tokenize('A*?');
+assertEqual(tokens[1], {type:'QUANT', min:0, max:Infinity, reluctant:true}, '7.2 *? -> {0,Inf,reluctant}');
+
+// 7.3 Tokenizer: ??
+tokens = tokenize('A??');
+assertEqual(tokens[1], {type:'QUANT', min:0, max:1, reluctant:true}, '7.3 ?? -> {0,1,reluctant}');
+
+// 7.4 Tokenizer: {n,m}?
+tokens = tokenize('A{2,5}?');
+assertEqual(tokens[1], {type:'QUANT', min:2, max:5, reluctant:true}, '7.4 {2,5}? -> {2,5,reluctant}');
+
+// 7.5 Tokenizer: {n}?
+tokens = tokenize('A{3}?');
+assertEqual(tokens[1], {type:'QUANT', min:3, max:3, reluctant:true}, '7.5 {3}? -> {3,3,reluctant}');
+
+// 7.6 Tokenizer: {n,}?
+tokens = tokenize('A{2,}?');
+assertEqual(tokens[1], {type:'QUANT', min:2, max:Infinity, reluctant:true}, '7.6 {2,}? -> {2,Inf,reluctant}');
+
+// 7.7 Greedy quantifiers have reluctant:false
+tokens = tokenize('A+ B* C?');
+assertEqual(tokens[1].reluctant, false, '7.7a + has reluctant:false');
+assertEqual(tokens[3].reluctant, false, '7.7b * has reluctant:false');
+assertEqual(tokens[5].reluctant, false, '7.7c ? has reluctant:false');
+
+// 7.8 PatternElement: reluctant flag
+pattern = parsePattern('A+?');
+assertEqual(pattern.elements[0].reluctant, true, '7.8 A+? element has reluctant:true');
+
+// 7.9 Mixed greedy and reluctant
+pattern = parsePattern('A+ B*?');
+assertEqual(pattern.elements[0].reluctant, false, '7.9a A+ has reluctant:false');
+assertEqual(pattern.elements[1].reluctant, true, '7.9b B*? has reluctant:true');
+
+// 7.10 Reluctant on groups
+pattern = parsePattern('(A B)+?');
+let groupEnd = pattern.elements.find(e => e.isGroupEnd());
+assertEqual(groupEnd.reluctant, true, '7.10 (A B)+? group has reluctant:true');
+
+// 7.11 astToString preserves reluctant
+ast = parseSequence(tokenize('A+? B*'), {value:0}, new Set());
+assertEqual(astToString(ast), 'A+? B*', '7.11 astToString(A+? B*) = "A+? B*"');
+
+// 7.12 astEqual distinguishes reluctant
+ast1 = parseSequence(tokenize('A+'), {value:0}, new Set());
+ast2 = parseSequence(tokenize('A+?'), {value:0}, new Set());
+assertEqual(astEqual(ast1, ast2), false, '7.12 astEqual(A+, A+?) = false');
 
 // ============================================================
 // Summary
