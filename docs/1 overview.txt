@@ -378,10 +378,7 @@
     - contexts[0] emit 후 대기열 처리 (start 순):
         1. start >= contexts[0].start → 중단 (아직 emit 자격 없음)
         2. PAST LAST: start <= 직전 emit의 end → 폐기, 다음 항목 계속
-        3. TO NEXT: end >= contexts[0].start (ctx[0]과 겹침)
-                    → 중단 (이 항목부터 ctx[0] 정리 후까지 대기)
-        4. TO NEXT: end < contexts[0].start (겹치지 않음)
-                    → emit, 다음 항목 계속
+        3. TO NEXT: 블럭 없음 (중첩 허용) → emit, 다음 항목 계속
 
 
 6. 모듈 간 의존성

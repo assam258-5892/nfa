@@ -1,32 +1,28 @@
 // ============== NFA Runtime (docs/4 executor.txt) ==============
 // Requires: parser.js
 
-/**
- * Summary: Aggregate values and paths
- * - aggregates: {} (placeholder for SUM, COUNT, FIRST, LAST, MIN, MAX)
- * - paths: Array of paths (insertion order = Lexical Order)
- */
+// Helper: copy array (C-portable, no slice/spread)
+function copyArray(arr) {
+    var result = [];
+    for (var i = 0; i < arr.length; i++) result.push(arr[i]);
+    return result;
+}
+
+// Summary: paths with aggregates (insertion order = Lexical Order)
 class Summary {
     constructor(paths) {
         if (paths === undefined) paths = [[]];
-        this.aggregates = {};  // Future: { sum: 0, count: 0, first: null, last: null, min: null, max: null }
+        this.aggregates = {};
         this.paths = [];
         for (var i = 0; i < paths.length; i++) {
-            var p = paths[i];
-            var pathCopy = [];
-            for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
-            this.paths.push(pathCopy);
+            this.paths.push(copyArray(paths[i]));
         }
     }
 
     clone() {
         var s = new Summary([]);
-        s.paths = [];
         for (var i = 0; i < this.paths.length; i++) {
-            var p = this.paths[i];
-            var pathCopy = [];
-            for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
-            s.paths.push(pathCopy);
+            s.paths.push(copyArray(this.paths[i]));
         }
         var keys = Object.keys(this.aggregates);
         for (var i = 0; i < keys.length; i++) {
@@ -44,77 +40,48 @@ class Summary {
     }
 
     mergePaths(other) {
-        // Build existing set as object for O(1) lookup
         var existing = {};
         for (var i = 0; i < this.paths.length; i++) {
             existing[this.paths[i].join(',')] = true;
         }
         for (var i = 0; i < other.paths.length; i++) {
-            var p = other.paths[i];
-            var key = p.join(',');
+            var key = other.paths[i].join(',');
             if (!existing[key]) {
-                var pathCopy = [];
-                for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
-                this.paths.push(pathCopy);
+                this.paths.push(copyArray(other.paths[i]));
                 existing[key] = true;
             }
         }
     }
 
-    // Check if aggregates are equal (for Summary merge)
     aggregatesEqual(other) {
         var keys1 = Object.keys(this.aggregates);
         var keys2 = Object.keys(other.aggregates);
         if (keys1.length !== keys2.length) return false;
         for (var i = 0; i < keys1.length; i++) {
-            var k = keys1[i];
-            if (this.aggregates[k] !== other.aggregates[k]) return false;
+            if (this.aggregates[keys1[i]] !== other.aggregates[keys1[i]]) return false;
         }
         return true;
     }
-
-    // Get paths in insertion order (Lexical Order)
-    getPaths() {
-        var result = [];
-        for (var i = 0; i < this.paths.length; i++) {
-            var pathCopy = [];
-            for (var j = 0; j < this.paths[i].length; j++) {
-                pathCopy.push(this.paths[i][j]);
-            }
-            result.push(pathCopy);
-        }
-        return result;
-    }
 }
 
-/**
- * MatchState: NFA runtime state
- * - elementIndex: current pattern position (-1 = completed)
- * - counts[]: repetition counts per depth level
- * - summaries[]: Summary array (maintains creation order)
- */
+// MatchState: NFA runtime state (elementIndex, counts[], summaries[])
 class MatchState {
     constructor(elementIndex, counts, summaries) {
-        if (counts === undefined) counts = [];
         this.elementIndex = elementIndex;
-        this.counts = [];
-        for (var i = 0; i < counts.length; i++) this.counts.push(counts[i]);
+        this.counts = counts ? copyArray(counts) : [];
         if (summaries) {
             this.summaries = [];
             for (var i = 0; i < summaries.length; i++) {
                 this.summaries.push(summaries[i].clone());
             }
         } else {
-            this.summaries = [new Summary([[]])];
+            this.summaries = [new Summary()];
         }
     }
 
     clone() {
-        var countsCopy = [];
-        for (var i = 0; i < this.counts.length; i++) countsCopy.push(this.counts[i]);
-        return new MatchState(this.elementIndex, countsCopy, this.summaries);
+        return new MatchState(this.elementIndex, this.counts, this.summaries);
     }
-
 
     withMatch(varId) {
         var s = this.clone();
@@ -124,15 +91,9 @@ class MatchState {
         return s;
     }
 
-    /**
-     * Merge summaries from another state
-     * - Same aggregates → merge paths
-     * - Different aggregates → add as new summary
-     */
     mergeSummaries(other) {
         for (var i = 0; i < other.summaries.length; i++) {
             var otherSum = other.summaries[i];
-            // Find matching summary by aggregates
             var match = null;
             for (var j = 0; j < this.summaries.length; j++) {
                 if (this.summaries[j].aggregatesEqual(otherSum)) {
@@ -148,8 +109,7 @@ class MatchState {
         }
     }
 
-    // Get all paths from all summaries (insertion order = Lexical Order)
-    getMatchedPaths() {
+    get matchedPaths() {
         var allPaths = [];
         for (var i = 0; i < this.summaries.length; i++) {
             var sum = this.summaries[i];
@@ -160,19 +120,12 @@ class MatchState {
         return allPaths;
     }
 
-    // Getter for backward compatibility
-    get matchedPaths() {
-        return this.getMatchedPaths();
-    }
-
     hash() {
         return this.elementIndex + ':' + this.counts.join(',');
     }
 }
 
-/**
- * MatchContext: Group of states with same matchStart
- */
+// MatchContext: group of states with same matchStart
 var _ctxId = 0;
 
 class MatchContext {
@@ -182,9 +135,9 @@ class MatchContext {
         this.matchEnd = -1;
         this.isCompleted = false;
         this.states = [];
-        this.completedPaths = [];    // Array of paths (insertion order = Lexical Order)
-        this._pathSet = {};          // Object instead of Set for path dedup
-        this._greedyFallback = null;  // Best path preserved for greedy fallback
+        this.completedPaths = [];
+        this._pathSet = {};
+        this._greedyFallback = null;
     }
 
     addCompletedPath(path) {
@@ -198,17 +151,8 @@ class MatchContext {
         }
     }
 
-    // Get completed paths in insertion order (Lexical Order)
     getCompletedPaths() {
-        var result = [];
-        for (var i = 0; i < this.completedPaths.length; i++) {
-            var pathCopy = [];
-            for (var j = 0; j < this.completedPaths[i].length; j++) {
-                pathCopy.push(this.completedPaths[i][j]);
-            }
-            result.push(pathCopy);
-        }
-        return result;
+        return this.completedPaths;  // Direct return, caller shouldn't modify
     }
 }
 
@@ -307,21 +251,13 @@ class NFAExecutor {
 
         // 2. Process existing contexts
         var discardedStates = [];
-        var deadStates = [];
         for (var i = 0; i < this.contexts.length; i++) {
             var ctx = this.contexts[i];
             if (ctx.isCompleted || ctx.matchStart === row) continue;
             var result = this.processContext(ctx, row, trueVars, log, stateMerges);
-            if (result) {
-                if (result.discardedStates) {
-                    for (var j = 0; j < result.discardedStates.length; j++) {
-                        discardedStates.push(result.discardedStates[j]);
-                    }
-                }
-                if (result.deadStates) {
-                    for (var j = 0; j < result.deadStates.length; j++) {
-                        deadStates.push(result.deadStates[j]);
-                    }
+            if (result && result.discardedStates) {
+                for (var j = 0; j < result.discardedStates.length; j++) {
+                    discardedStates.push(result.discardedStates[j]);
                 }
             }
         }
@@ -329,13 +265,7 @@ class NFAExecutor {
         // 3. Context absorption
         var absorptions = this.absorbContexts(log);
 
-        // 4. Snapshot for history
-        // Include contexts that have states, are completed, or have dead states in this row
-        var deadContextIds = {};
-        for (var i = 0; i < deadStates.length; i++) {
-            deadContextIds[deadStates[i].contextId] = true;
-        }
-
+        // 4. Helper function
         function toVarNames(path) {
             var result = [];
             for (var i = 0; i < path.length; i++) {
@@ -344,10 +274,17 @@ class NFAExecutor {
             return result;
         }
 
+        var inputCopy = [];
+        var trueVarKeys = Object.keys(trueVars);
+        for (var i = 0; i < trueVarKeys.length; i++) {
+            inputCopy.push(parseInt(trueVarKeys[i]));
+        }
+
+        // 5. Build context snapshot (before emit/cleanup)
         var contextSnapshot = [];
         for (var i = 0; i < this.contexts.length; i++) {
             var ctx = this.contexts[i];
-            if (ctx.states.length > 0 || ctx.isCompleted || deadContextIds[ctx.id]) {
+            if (ctx.states.length > 0 || ctx.isCompleted) {
                 var completedPathsMapped = [];
                 var sortedPaths = ctx.getCompletedPaths();
                 for (var j = 0; j < sortedPaths.length; j++) {
@@ -381,46 +318,52 @@ class NFAExecutor {
                     matchStart: ctx.matchStart,
                     matchEnd: ctx.matchEnd,
                     isCompleted: ctx.isCompleted,
-                    isDead: ctx.states.length === 0 && !ctx.isCompleted,
                     completedPaths: completedPathsMapped,
                     states: statesMapped
                 });
             }
         }
 
-        var inputCopy = [];
-        var trueVarKeys = Object.keys(trueVars);
-        for (var i = 0; i < trueVarKeys.length; i++) {
-            inputCopy.push(parseInt(trueVarKeys[i]));
-        }
-        // 5. Queue completed contexts and emit results
+        // 6. Queue completed contexts and emit results
         var emitResult = this.emitRows(log);
 
-        this.history.push({ row: row, input: inputCopy, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs, emitted: emitResult.emitted, queued: emitResult.queued, discarded: emitResult.discarded });
-
-        // 6. Remove dead/completed contexts
+        // 7. Remove dead/completed contexts
+        // - Dead: no states and not completed (match failed)
+        // - SKIP PAST LAST: also remove active contexts that overlap with emitted match
         var aliveContexts = [];
         for (var i = 0; i < this.contexts.length; i++) {
             var ctx = this.contexts[i];
+            // Dead context: no active states and not completed
+            if (ctx.states.length === 0 && !ctx.isCompleted) {
+                emitResult.discarded.push({ contextId: ctx.id, matchStart: ctx.matchStart, matchEnd: ctx.matchEnd, reason: 'DEAD: no matching path found' });
+                if (log) log('💀 DEAD ctx #' + ctx.id + ' (start=' + ctx.matchStart + ') - no matching path', 'warning');
+                continue;
+            }
             if (ctx.states.length > 0 && !ctx.isCompleted) {
+                // SKIP PAST LAST: discard if start <= lastEmittedEnd
+                if (this.skipMode === SKIP_PAST_LAST && ctx.matchStart <= this.lastEmittedEnd) {
+                    emitResult.discarded.push({ contextId: ctx.id, matchStart: ctx.matchStart, matchEnd: ctx.matchEnd, reason: 'SKIP PAST LAST: active context overlaps (start=' + ctx.matchStart + ' <= lastEnd=' + this.lastEmittedEnd + ')' });
+                    if (log) log('🗑️ DISCARDED active ctx #' + ctx.id + ' (start=' + ctx.matchStart + ') - SKIP PAST LAST: overlaps with emitted match (lastEnd=' + this.lastEmittedEnd + ')', 'warning');
+                    continue;
+                }
                 aliveContexts.push(ctx);
             }
         }
         this.contexts = aliveContexts;
 
-        return { row: row, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs, emitted: emitResult.emitted, queued: emitResult.queued, discarded: emitResult.discarded };
+        this.history.push({ row: row, input: inputCopy, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, logs: logs, emitted: emitResult.emitted, queued: emitResult.queued, discarded: emitResult.discarded });
+
+        return { row: row, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, logs: logs, emitted: emitResult.emitted, queued: emitResult.queued, discarded: emitResult.discarded };
     }
 
     /**
      * Emit completed matches based on SKIP mode
-     * Overview 5.5:
      * - contexts[0] completed → emit immediately
      * - contexts[1+] completed → queue in completedContexts
      * - After emit, process queue by start order:
      *   1. start >= current contexts[0].start → stop (not yet eligible)
      *   2. PAST LAST: start <= lastEmittedEnd → discard, continue
-     *   3. TO NEXT: end >= contexts[0].start (overlaps) → stop (wait)
-     *   4. TO NEXT: end < contexts[0].start (no overlap) → emit, continue
+     *   3. TO NEXT: no blocking (overlapping matches allowed) → emit
      */
     emitRows(log) {
         var emitted = [];
@@ -520,13 +463,8 @@ class NFAExecutor {
                     if (log) log('🗑️ DISCARDED ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ') - SKIP PAST LAST: overlaps with emitted match (start=' + ctx.matchStart + ' <= lastEnd=' + this.lastEmittedEnd + ')', 'warning');
                     continue;
                 }
-            } else if (this.skipMode === SKIP_TO_NEXT) {
-                // Rule 3: TO NEXT - end >= activeCtxStart → stop (wait for active to complete)
-                if (ctx.matchEnd >= activeCtxStart) {
-                    break;
-                }
-                // Rule 4: TO NEXT - end < activeCtxStart → emit
             }
+            // TO NEXT: no blocking - overlapping matches allowed
 
             // Emit this context
             if (log) log('📤 EMITTING ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ')', 'success');

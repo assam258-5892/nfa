@@ -1,39 +1,19 @@
 // ============================================================
-// Pattern Parser for NFA Matcher
-// ============================================================
-//
-// Code organization:
-//   1. Public API (pipeline order)
-//   2. Internal functions (pipeline order)
-//
+// Pattern Parser for NFA Matcher (docs/2 parser.txt)
 // Pipeline: patternStr → tokenize → parseSequence → optimizeAST → compileAST → Pattern
 // ============================================================
 
-// ============== Public API ==============
-
-// ------ Data Structures ------
-
-/*
- * PatternElement: Each element in the flattened pattern array
- *
- * varId conventions:
- *   - Normal variable: 0, 1, 2, ... (index into Pattern.variables)
- *   - ALT_START: -1
- *   - GROUP_END: -2
- *   - PATTERN_END: -3
- */
+// PatternElement: varId (0+=var, -1=#ALT, -2=#END, -3=#FIN)
 class PatternElement {
     constructor(varId) {
-        this.varId = varId;         // Variable ID (0+ for vars, negative for special)
-        this.depth = 0;             // Nesting depth
-        this.min = 1;               // Minimum repetitions
-        this.max = 1;               // Maximum repetitions (Infinity for *)
-        this.next = -1;             // Next element index (-1 = end)
-        this.jump = -1;             // GROUP_END: loop back / VAR in ALT: next alternative
-        this.reluctant = false;     // Reluctant quantifier (minimal matching)
+        this.varId = varId;
+        this.depth = 0;
+        this.min = 1;
+        this.max = 1;
+        this.next = -1;
+        this.jump = -1;
+        this.reluctant = false;
     }
-
-    // Helper methods to check element type
     isVar() { return this.varId >= 0; }
     isAltStart() { return this.varId === -1; }
     isGroupEnd() { return this.varId === -2; }
@@ -49,92 +29,51 @@ class Pattern {
     }
 }
 
-// ------ Main Entry Point ------
-
-/*
- * Main parsePattern function
- * Parses and compiles in one step, with optional optimization
- */
+// Main entry point
 function parsePattern(patternStr, options) {
     if (!options) options = {};
-    var optimize = options.optimize || false;
-
-    // Tokenize and parse to AST
-    var variables = [];  // Array instead of Set
     var tokens = tokenize(patternStr);
-    var pos = { value: 0 };
-    var ast = parseSequence(tokens, pos, variables);
-
-    // Optional optimization
-    if (optimize) {
-        ast = optimizeAST(ast);
-    }
-
-    // Compile to Pattern
+    var ast = parseSequence(tokens, { value: 0 }, []);
+    if (options.optimize) ast = optimizeAST(ast);
     return compileAST(ast);
 }
 
-// ------ Compiler ------
-
-/*
- * Compile AST to Pattern (flat element array)
- */
+// Compile AST to Pattern
 function compileAST(ast) {
     var pattern = new Pattern();
-
-    // Build variable name to ID map first (by order of appearance in AST)
-    // varIdMap: { name: id } object instead of Map
     var varIdMap = {};
     var varList = [];
     collectVariables(ast, varIdMap, varList);
     pattern.variables = varList;
 
-    // Flatten AST to elements array (now with varId)
     flattenAST(ast, pattern, 0, varIdMap);
 
-    // Set up next pointers (temporarily pointing to finIdx placeholder)
-    var finIdx = pattern.elements.length;  // #FIN will be at this index
+    // Set up next pointers
+    var finIdx = pattern.elements.length;
     for (var i = 0; i < pattern.elements.length; i++) {
         if (pattern.elements[i].next === -1) {
             pattern.elements[i].next = (i < pattern.elements.length - 1) ? i + 1 : finIdx;
         }
     }
 
-    // Add #FIN element at the end
-    var finElem = new PatternElement(-3);  // -3 = #FIN
-    finElem.depth = 0;
-    finElem.min = 1;
-    finElem.max = 1;
-    finElem.next = -1;  // End of pattern
-    finElem.jump = -1;
-    finElem.reluctant = false;
+    // Add #FIN
+    var finElem = new PatternElement(-3);
     pattern.elements.push(finElem);
 
-    // Calculate max depth and detect reluctant mode
-    var maxD = 0;
-    var hasReluctant = false;
+    // Calculate maxDepth and reluctant flag
+    var maxD = 0, hasReluctant = false;
     for (var j = 0; j < pattern.elements.length; j++) {
-        if (pattern.elements[j].depth > maxD) {
-            maxD = pattern.elements[j].depth;
-        }
-        if (pattern.elements[j].reluctant) {
-            hasReluctant = true;
-        }
+        if (pattern.elements[j].depth > maxD) maxD = pattern.elements[j].depth;
+        if (pattern.elements[j].reluctant) hasReluctant = true;
     }
     pattern.maxDepth = maxD;
-    pattern.reluctant = hasReluctant;  // Pattern-level reluctant mode
+    pattern.reluctant = hasReluctant;
 
     return pattern;
 }
 
-/*
- * Collect variable names from AST in order of appearance
- * varIdMap: object { name: id }
- * varList: array of variable names in order
- */
 function collectVariables(node, varIdMap, varList) {
     if (!node) return;
-
     var i;
     if (node.type === 'VAR') {
         if (!(node.name in varIdMap)) {
@@ -142,36 +81,20 @@ function collectVariables(node, varIdMap, varList) {
             varList.push(node.name);
         }
     } else if (node.type === 'SEQ') {
-        for (i = 0; i < node.items.length; i++) {
-            collectVariables(node.items[i], varIdMap, varList);
-        }
+        for (i = 0; i < node.items.length; i++) collectVariables(node.items[i], varIdMap, varList);
     } else if (node.type === 'GROUP') {
         collectVariables(node.content, varIdMap, varList);
     } else if (node.type === 'ALT') {
-        for (i = 0; i < node.alternatives.length; i++) {
-            collectVariables(node.alternatives[i], varIdMap, varList);
-        }
+        for (i = 0; i < node.alternatives.length; i++) collectVariables(node.alternatives[i], varIdMap, varList);
     }
 }
 
-// ------ Optimizer ------
-
-/*
- * Apply all optimizations in recommended order
- */
+// Optimizer
 function optimizeAST(node) {
-    node = unwrapGroups(node);
-    node = removeDuplicates(node);
-    node = optimizeQuantifiers(node);
-    return node;
+    return optimizeQuantifiers(removeDuplicates(unwrapGroups(node)));
 }
 
-/*
- * 1. Unwrap unnecessary grouping structures
- * - Removes {1,1} groups
- * - Removes single-item wrappers (SEQ(A) → A, ALT(A) → A)
- * - Flattens nested SEQ/ALT structures
- */
+// Unwrap unnecessary groups
 function unwrapGroups(node) {
     if (!node) return node;
 
@@ -254,9 +177,7 @@ function unwrapGroups(node) {
     return node;
 }
 
-/*
- * 2. Remove duplicate alternatives in ALT
- */
+// Remove duplicate alternatives in ALT
 function removeDuplicates(node) {
     if (!node) return node;
 
@@ -306,11 +227,7 @@ function removeDuplicates(node) {
     return node;
 }
 
-/*
- * 3. Optimize quantifiers
- * - Merges nested quantified groups when safe: (A{m,n}){p,q} → A{m*p, n*q} (when at least one is fixed)
- * - Merges consecutive identical variables: A A A → A{3,3}
- */
+// Optimize quantifiers: merge nested groups and consecutive vars
 function optimizeQuantifiers(node) {
     if (!node) return node;
 
@@ -418,23 +335,8 @@ function optimizeQuantifiers(node) {
     return node;
 }
 
-// ============== Internal Functions ==============
+// ============== Tokenizer ==============
 
-// ------ Tokenizer ------
-
-/*
- * Supported pattern syntax (subset of SQL RPR standard):
- *   - Variables: A-Z, a-z (can include digits and underscore)
- *   - Grouping: ( )
- *   - Alternation: |
- *   - Quantifiers: ? * + {n,m}
- *
- * NOT supported (will throw error):
- *   - AND operator: & (use DEFINE clause for condition combination)
- *   - Anchors: ^ $ (partition boundaries)
- *   - Exclusion: {- -} (output exclusion)
- *   - PERMUTE: PERMUTE(A,B,C) (all permutations)
- */
 function tokenize(str) {
     const tokens = [];
     let i = 0;
@@ -629,7 +531,7 @@ function tokenize(str) {
     return tokens;
 }
 
-// ------ AST Parser ------
+// ============== AST Parser ==============
 
 function extractQuantifier(tokens, pos) {
     var tok = tokens[pos.value];
@@ -643,17 +545,13 @@ function extractQuantifier(tokens, pos) {
     return { min: 1, max: 1, reluctant: false };
 }
 
-// Helper: add variable name to array (or Set for test compatibility)
+// Add variable name to array (supports Set for test compatibility)
 function addVariable(variables, name) {
-    // Support both Set (for tests) and Array (for C-portable code)
-    if (variables.add) {
-        variables.add(name);
-    } else {
-        for (var i = 0; i < variables.length; i++) {
-            if (variables[i] === name) return;
-        }
-        variables.push(name);
+    if (variables.add) { variables.add(name); return; }
+    for (var i = 0; i < variables.length; i++) {
+        if (variables[i] === name) return;
     }
+    variables.push(name);
 }
 
 function parseItem(tokens, pos, variables) {
@@ -727,11 +625,9 @@ function handleAlternation(tokens, pos, currentItems, variables) {
     return { type: 'ALT', alternatives: alternatives };
 }
 
-// ------ AST Utilities ------
+// ============== AST Utilities ==============
 
-/*
- * AST node equality comparison (for duplicate detection)
- */
+// AST node equality comparison
 function astEqual(a, b) {
     if (a.type !== b.type) return false;
     if (a.min !== b.min || a.max !== b.max) return false;
@@ -761,9 +657,7 @@ function astEqual(a, b) {
     return false;
 }
 
-/*
- * Format quantifier suffix for astToString
- */
+// Format quantifier suffix
 function quantStr(min, max, reluctant) {
     var inf = (max === null || max === Infinity);
     var r = reluctant ? '?' : '';
@@ -776,10 +670,7 @@ function quantStr(min, max, reluctant) {
     return '{' + min + ',' + max + '}' + r;
 }
 
-/*
- * Convert AST back to pattern string
- * parentType: parent node type for determining if parentheses are needed
- */
+// Convert AST back to pattern string
 function astToString(node, parentType) {
     if (!node) return '';
     if (parentType === undefined) parentType = null;
@@ -819,7 +710,7 @@ function astToString(node, parentType) {
     return '';
 }
 
-// ------ AST Flattener ------
+// ============== AST Flattener ==============
 
 function flattenAST(node, pattern, depth, varIdMap) {
     if (!node) return;
