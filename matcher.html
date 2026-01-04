@@ -556,6 +556,25 @@
             renderCurrentState();
         }
 
+        // Helper: varId to variable name
+        function getVarName(varId) {
+            if (!currentPattern) return '-';
+            if (varId === -1) return '#ALT';
+            if (varId === -2) return '#END';
+            if (varId === -3) return '#FIN';
+            if (varId >= 0 && varId < currentPattern.variables.length) {
+                return currentPattern.variables[varId];
+            }
+            return '-';
+        }
+
+        // Helper: path (varId array) to string
+        function pathToString(path) {
+            if (!path || path.length === 0) return '∅';
+            if (!currentPattern) return path.join(' ');
+            return path.map(varId => currentPattern.variables[varId] || varId).join(' ');
+        }
+
         function renderPatternDisplay() {
             const container = document.getElementById('patternDisplay');
             if (!currentPattern || currentPattern.elements.length === 0) {
@@ -575,7 +594,7 @@
             }
 
             let html = '<table class="pattern-table"><thead><tr>';
-            html += '<th>idx</th><th>var</th><th>vIdx</th><th>depth</th><th>min</th><th>max</th><th>next</th><th>jump</th>';
+            html += '<th>idx</th><th>var</th><th>varId</th><th>depth</th><th>min</th><th>max</th><th>next</th><th>jump</th>';
             html += '</tr></thead><tbody>';
 
             for (let i = 0; i < currentPattern.elements.length; i++) {
@@ -588,12 +607,12 @@
                 else if (elem.isAltStart()) rowClass = 'alternation';
 
                 const maxStr = elem.max === Infinity ? '∞' : elem.max;
-                const varIdxStr = elem.varIndex;
+                const varName = getVarName(elem.varId);
 
                 html += `<tr>`;
                 html += `<td class="${rowClass}">[${i}]</td>`;
-                html += `<td class="${rowClass}">${elem.varName}</td>`;
-                html += `<td class="${rowClass}">${varIdxStr}</td>`;
+                html += `<td class="${rowClass}">${varName}</td>`;
+                html += `<td class="${rowClass}">${elem.varId}</td>`;
                 html += `<td class="${rowClass}">${elem.depth}</td>`;
                 html += `<td class="${rowClass}">${elem.min}</td>`;
                 html += `<td class="${rowClass}">${maxStr}</td>`;
@@ -658,12 +677,12 @@
                                 const elem = currentPattern.elements[group.elemIdx];
                                 if (!elem) continue;
                                 const countsStr = group.counts ? `[${group.counts.join(',')}]` : '';
-                                const stateInfo = `[${group.elemIdx}:${elem.varName}] ${countsStr}`;
+                                const stateInfo = `[${group.elemIdx}:${getVarName(elem.varId)}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
                                 html += `<div style="color: #e94560; font-weight: bold;">state: ${stateInfo}</div>`;
                                 for (const path of group.paths) {
-                                    html += `<div style="padding-left: 12px; color: #aaa;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #aaa;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -698,13 +717,13 @@
                             for (const ds of deadStates) {
                                 const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
                                 const elem = currentPattern.elements[ds.elementIndex];
-                                const elemName = elem ? elem.varName : '?';
+                                const elemName = elem ? getVarName(elem.varId) : '?';
                                 const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
                                 html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
                                 for (const path of ds.matchedPaths) {
-                                    html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #888;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -755,7 +774,7 @@
                                 const completedPaths = ctx.completedPaths;
                                 for (const path of completedPaths) {
                                     const pathVars = path.slice(1); // path[0] is ID
-                                    html += `<div style="padding-left: 12px; color: #00ff88;">${pathVars.join(' ')} ✓</div>`;
+                                    html += `<div style="padding-left: 12px; color: #00ff88;">${pathToString(pathVars)} ✓</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -768,9 +787,9 @@
                                 const elem = currentPattern.elements[elemIdx];
                                 if (!elem) continue;
                                 const countsStr = merge.counts ? `[${merge.counts.join(',')}]` : '';
-                                const stateInfo = `[${elemIdx}:${elem.varName}] ${countsStr}`;
+                                const stateInfo = `[${elemIdx}:${getVarName(elem.varId)}] ${countsStr}`;
                                 for (const path of merge.absorbedPaths) {
-                                    const pathStr = path.join(' ') || '∅';
+                                    const pathStr = pathToString(path);
                                     html += `<div class="state-item" style="background: #2a2000; border-left: 3px solid #ffd700;">
                                         <span class="state-elem" style="color: #ffd700;">state(merged): ${pathStr} → ${stateInfo}</span>
                                     </div>`;
@@ -796,12 +815,12 @@
                                 const elem = currentPattern.elements[group.elemIdx];
                                 if (!elem) continue;
                                 const countsStr = group.counts ? `[${group.counts.join(',')}]` : '';
-                                const stateInfo = `[${group.elemIdx}:${elem.varName}] ${countsStr}`;
+                                const stateInfo = `[${group.elemIdx}:${getVarName(elem.varId)}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
                                 html += `<div style="color: #00d9ff; font-weight: bold;">state: ${stateInfo}</div>`;
                                 for (const path of group.paths) {
-                                    html += `<div style="padding-left: 12px; color: #aaa;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #aaa;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -811,13 +830,13 @@
                             for (const ds of ctxDeadStates) {
                                 const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
                                 const elem = currentPattern.elements[ds.elementIndex];
-                                const elemName = elem ? elem.varName : '?';
+                                const elemName = elem ? getVarName(elem.varId) : '?';
                                 const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.5;">`;
                                 html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
                                 for (const path of ds.matchedPaths) {
-                                    html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #888;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -827,13 +846,13 @@
                             for (const ds of ctxDiscardedStates) {
                                 const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
                                 const elem = currentPattern.elements[ds.elementIndex];
-                                const elemName = elem ? elem.varName : '#FIN';
+                                const elemName = elem ? getVarName(elem.varId) : '#FIN';
                                 const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.6;">`;
                                 html += `<div style="color: #888; font-weight: bold;">state(discarded): ${stateInfo}</div>`;
                                 for (const path of ds.matchedPaths) {
-                                    html += `<div style="padding-left: 12px; color: #666;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #666;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -847,13 +866,13 @@
                             for (const ds of ctxDeadStates) {
                                 const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
                                 const elem = currentPattern.elements[ds.elementIndex];
-                                const elemName = elem ? elem.varName : '?';
+                                const elemName = elem ? getVarName(elem.varId) : '?';
                                 const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
                                 html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
                                 for (const path of ds.matchedPaths) {
-                                    html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #888;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -870,7 +889,7 @@
                             const finalPaths = completedPaths.filter(p => p.length === maxLen);
                             for (const path of finalPaths) {
                                 const pathVars = path.slice(1); // path[0] is ID
-                                html += `<div style="padding-left: 12px; color: #00ff88;">${pathVars.join(' ')} ✓</div>`;
+                                html += `<div style="padding-left: 12px; color: #00ff88;">${pathToString(pathVars)} ✓</div>`;
                             }
                             html += `</div>`;
 
@@ -879,13 +898,13 @@
                             for (const ds of ctxDeadStates) {
                                 const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
                                 const elem = currentPattern.elements[ds.elementIndex];
-                                const elemName = elem ? elem.varName : '?';
+                                const elemName = elem ? getVarName(elem.varId) : '?';
                                 const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.5;">`;
                                 html += `<div style="color: #e94560; font-weight: bold;">state(dead): ${stateInfo}</div>`;
                                 for (const path of ds.matchedPaths) {
-                                    html += `<div style="padding-left: 12px; color: #888;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #888;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -895,13 +914,13 @@
                             for (const ds of ctxDiscardedStates) {
                                 const countsStr = ds.counts ? `[${ds.counts.join(',')}]` : '';
                                 const elem = currentPattern.elements[ds.elementIndex];
-                                const elemName = elem ? elem.varName : '#FIN';
+                                const elemName = elem ? getVarName(elem.varId) : '#FIN';
                                 const stateInfo = `[${ds.elementIndex}:${elemName}] ${countsStr}`;
 
                                 html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px; opacity: 0.6;">`;
                                 html += `<div style="color: #888; font-weight: bold;">state(discarded): ${stateInfo}</div>`;
                                 for (const path of ds.matchedPaths) {
-                                    html += `<div style="padding-left: 12px; color: #666;">${path.join(' ') || '∅'}</div>`;
+                                    html += `<div style="padding-left: 12px; color: #666;">${pathToString(path)}</div>`;
                                 }
                                 html += `</div>`;
                             }
@@ -962,12 +981,12 @@
                         const elem = currentPattern.elements[group.elemIdx];
                         if (!elem) continue;
                         const countsStr = group.counts ? `[${group.counts.join(',')}]` : '';
-                        const stateInfo = `[${group.elemIdx}:${elem.varName}] ${countsStr}`;
+                        const stateInfo = `[${group.elemIdx}:${getVarName(elem.varId)}] ${countsStr}`;
 
                         html += `<div class="state-item" style="flex-direction: column; align-items: flex-start; gap: 2px;">`;
                         html += `<div style="color: #00d9ff; font-weight: bold;">state: ${stateInfo}</div>`;
                         for (const path of group.paths) {
-                            html += `<div style="padding-left: 12px; color: #aaa;">${path.join(' ') || '∅'}</div>`;
+                            html += `<div style="padding-left: 12px; color: #aaa;">${pathToString(path)}</div>`;
                         }
                         html += `</div>`;
                     }

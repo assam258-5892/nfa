@@ -5,7 +5,7 @@
  * MatchState: NFA runtime state
  * - elementIndex: current pattern position (-1 = completed)
  * - counts[]: repetition counts per depth level
- * - matchedPaths[]: paths for CLASSIFIER() support
+ * - matchedPaths[]: paths as varId arrays (e.g., [[0,0,1], [0,1,1]])
  */
 class MatchState {
     constructor(elementIndex, counts = [], matchedPaths = [[]]) {
@@ -22,9 +22,9 @@ class MatchState {
         );
     }
 
-    withMatch(varName) {
+    withMatch(varId) {
         const s = this.clone();
-        s.matchedPaths = s.matchedPaths.map(p => [...p, varName]);
+        s.matchedPaths = s.matchedPaths.map(p => [...p, varId]);
         return s;
     }
 
@@ -90,16 +90,33 @@ class NFAExecutor {
     }
 
     /**
-     * Process one row of input
+     * Convert variable names to varIds using pattern.variables
      */
-    processRow(trueVars) {
+    toVarIds(varNames) {
+        const varIds = new Set();
+        for (const name of varNames) {
+            const idx = this.pattern.variables.indexOf(name);
+            if (idx >= 0) {
+                varIds.add(idx);
+            }
+        }
+        return varIds;
+    }
+
+    /**
+     * Process one row of input
+     * @param {string[]} trueVarNames - Array of variable names that are true for this row
+     */
+    processRow(trueVarNames) {
+        const trueVars = this.toVarIds(trueVarNames);
         this.currentRow++;
         const row = this.currentRow;
         const logs = [];
         const log = (msg, type = 'info') => logs.push({ message: msg, type });
         const stateMerges = [];
 
-        log(`Processing row ${row}: [${trueVars.join(', ') || 'none'}]`);
+        const trueVarNamesForLog = Array.from(trueVars).map(id => this.pattern.variables[id]);
+        log(`Processing row ${row}: [${trueVarNamesForLog.join(', ') || 'none'}]`);
 
         // 1. Try to start new context
         this.tryStartNewContext(row, trueVars, log, stateMerges);
@@ -166,14 +183,14 @@ class NFAExecutor {
             const elem = this.pattern.elements[state.elementIndex];
             if (!elem) continue;
 
-            if (elem.isVar() && trueVars.includes(elem.varName)) {
+            if (elem.isVar() && trueVars.has(elem.varId)) {
                 consumableStates.push(state);
             } else if (elem.isAltStart()) {
                 // Check each alternative
                 let altIdx = elem.next;
                 while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
                     const altElem = this.pattern.elements[altIdx];
-                    if (altElem && altElem.isVar() && trueVars.includes(altElem.varName)) {
+                    if (altElem && altElem.isVar() && trueVars.has(altElem.varId)) {
                         const altState = state.clone();
                         altState.elementIndex = altIdx;
                         consumableStates.push(altState);
@@ -195,8 +212,7 @@ class NFAExecutor {
         let nextWaitStates = this.expandToWaitPositions(Array.from(activeStates.values()));
 
         // Filter out non-viable states (when no pattern variable matches)
-        const patternVars = this.pattern.variables;
-        const hasPatternMatch = trueVars.some(v => patternVars.includes(v));
+        const hasPatternMatch = trueVars.size > 0;
         if (!hasPatternMatch) {
             nextWaitStates = this.filterNonViableStates(nextWaitStates, trueVars);
         }
@@ -255,8 +271,7 @@ class NFAExecutor {
         let nextWaitStates = this.expandToWaitPositions(Array.from(activeStates.values()));
 
         // Filter out non-viable states (when no pattern variable matches)
-        const patternVars = this.pattern.variables;
-        const hasPatternMatch = trueVars.some(v => patternVars.includes(v));
+        const hasPatternMatch = trueVars.size > 0;
         if (!hasPatternMatch) {
             nextWaitStates = this.filterNonViableStates(nextWaitStates, trueVars);
         }
@@ -287,13 +302,13 @@ class NFAExecutor {
             if (!elem) return false;
             // Check if this state can actually consume current input
             if (elem.isVar()) {
-                return trueVars.includes(elem.varName);
+                return trueVars.has(elem.varId);
             } else if (elem.isAltStart()) {
                 // Check if any alternative can match
                 let altIdx = elem.next;
                 while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
                     const altElem = this.pattern.elements[altIdx];
-                    if (altElem && altElem.isVar() && trueVars.includes(altElem.varName)) {
+                    if (altElem && altElem.isVar() && trueVars.has(altElem.varId)) {
                         return true;
                     }
                     altIdx = altElem ? altElem.jump : -1;
@@ -445,24 +460,25 @@ class NFAExecutor {
      * VAR transition
      */
     transitionVar(state, elem, trueVars, log, results) {
-        const matches = trueVars.includes(elem.varName);
+        const matches = trueVars.has(elem.varId);
         const count = state.counts[elem.depth] || 0;
+        const varName = this.pattern.variables[elem.varId];
 
         if (matches) {
             const newCount = count + 1;
-            const newState = state.withMatch(elem.varName);
+            const newState = state.withMatch(elem.varId);
             newState.counts[elem.depth] = newCount;
 
             if (newCount < elem.max) {
                 // Stay at VAR (can match more)
                 results.push(newState);
-                log(`${elem.varName} matched (${newCount}), staying`);
+                log(`${varName} matched (${newCount}), staying`);
             } else {
                 // Max reached - advance
                 newState.counts[elem.depth] = 0;
                 newState.elementIndex = elem.next;
                 results.push(newState);
-                log(`${elem.varName} matched (max=${elem.max}), advancing`);
+                log(`${varName} matched (max=${elem.max}), advancing`);
             }
         } else {
             // No match
@@ -477,9 +493,9 @@ class NFAExecutor {
                     results.push(...subResults);
                 }
                 // If subResults is empty, the chain couldn't progress - don't add wait state
-                log(`${elem.varName} not matched, min satisfied, advancing`);
+                log(`${varName} not matched, min satisfied, advancing`);
             } else {
-                log(`${elem.varName} not matched, count=${count}<min=${elem.min}, DEAD`);
+                log(`${varName} not matched, count=${count}<min=${elem.min}, DEAD`);
             }
         }
     }
@@ -726,7 +742,7 @@ class NFAExecutor {
                 return false;
             } else if (elem.isVar()) {
                 // Can we match this VAR?
-                if (trueVars.includes(elem.varName)) return true;
+                if (trueVars.has(elem.varId)) return true;
 
                 // Can we skip this VAR?
                 const count = state.counts[elem.depth] || 0;
@@ -744,7 +760,7 @@ class NFAExecutor {
         let altIdx = altElem.next;
         while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
             const elem = this.pattern.elements[altIdx];
-            if (elem && elem.isVar() && trueVars.includes(elem.varName)) {
+            if (elem && elem.isVar() && trueVars.has(elem.varId)) {
                 return true;
             }
             altIdx = elem ? elem.jump : -1;
@@ -804,7 +820,12 @@ class NFAExecutor {
         return absorptions;
     }
 
-    getStartStates(trueVars, log = () => {}) {
+    /**
+     * Get valid start states for given input (for testing)
+     * @param {string[]} trueVarNames - Array of variable names
+     */
+    getStartStates(trueVarNames) {
+        const trueVars = this.toVarIds(trueVarNames);
         if (this.pattern.elements.length === 0) return [];
         const initCounts = new Array(this.pattern.maxDepth + 1).fill(0);
         const initState = new MatchState(0, initCounts);
@@ -815,13 +836,13 @@ class NFAExecutor {
             if (state.elementIndex === -1) continue;
             const elem = this.pattern.elements[state.elementIndex];
             if (!elem) continue;
-            if (elem.isVar() && trueVars.includes(elem.varName)) {
+            if (elem.isVar() && trueVars.has(elem.varId)) {
                 valid.push(state);
             } else if (elem.isAltStart()) {
                 let altIdx = elem.next;
                 while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
                     const altElem = this.pattern.elements[altIdx];
-                    if (altElem && altElem.isVar() && trueVars.includes(altElem.varName)) {
+                    if (altElem && altElem.isVar() && trueVars.has(altElem.varId)) {
                         const altState = state.clone();
                         altState.elementIndex = altIdx;
                         valid.push(altState);

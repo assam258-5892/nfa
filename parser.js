@@ -16,16 +16,15 @@
 /*
  * PatternElement: Each element in the flattened pattern array
  *
- * varName conventions:
- *   - Normal variable: "A", "B", etc.
- *   - ALT_START: "#ALT" (varIndex = -1)
- *   - GROUP_END: "#END" (varIndex = -2)
- *   - PATTERN_END: "#FIN" (varIndex = -3)
+ * varId conventions:
+ *   - Normal variable: 0, 1, 2, ... (index into Pattern.variables)
+ *   - ALT_START: -1
+ *   - GROUP_END: -2
+ *   - PATTERN_END: -3
  */
 class PatternElement {
-    constructor(varName) {
-        this.varName = varName;     // Variable name or special: "#ALT", "#END", "#FIN"
-        this.varIndex = -1;         // Variable index
+    constructor(varId) {
+        this.varId = varId;         // Variable ID (0+ for vars, negative for special)
         this.depth = 0;             // Nesting depth
         this.min = 1;               // Minimum repetitions
         this.max = 1;               // Maximum repetitions (Infinity for *)
@@ -34,10 +33,10 @@ class PatternElement {
     }
 
     // Helper methods to check element type
-    isVar() { return this.varName && !this.varName.startsWith('#'); }
-    isAltStart() { return this.varName === '#ALT'; }
-    isGroupEnd() { return this.varName === '#END'; }
-    isFinish() { return this.varName === '#FIN'; }
+    isVar() { return this.varId >= 0; }
+    isAltStart() { return this.varId === -1; }
+    isGroupEnd() { return this.varId === -2; }
+    isFinish() { return this.varId === -3; }
     canSkip() { return this.min === 0; }
 }
 
@@ -81,8 +80,13 @@ function parsePattern(patternStr, options = {}) {
 function compileAST(ast) {
     const pattern = new Pattern();
 
-    // Flatten AST to elements array
-    flattenAST(ast, pattern, 0);
+    // Build variable name to ID map first (by order of appearance in AST)
+    const varIdMap = new Map();
+    collectVariables(ast, varIdMap);
+    pattern.variables = Array.from(varIdMap.keys());
+
+    // Flatten AST to elements array (now with varId)
+    flattenAST(ast, pattern, 0, varIdMap);
 
     // Set up next pointers (temporarily pointing to finIdx placeholder)
     const finIdx = pattern.elements.length;  // #FIN will be at this index
@@ -93,39 +97,40 @@ function compileAST(ast) {
     }
 
     // Add #FIN element at the end
-    const finElem = new PatternElement('#FIN');
+    const finElem = new PatternElement(-3);  // -3 = #FIN
     finElem.depth = 0;
     finElem.min = 1;
     finElem.max = 1;
     finElem.next = -1;  // End of pattern
     pattern.elements.push(finElem);
 
-    // Build variable index map (by order of appearance)
-    const varIndexMap = new Map();
-    for (const elem of pattern.elements) {
-        if (elem.isVar() && !varIndexMap.has(elem.varName)) {
-            varIndexMap.set(elem.varName, varIndexMap.size);
-        }
-    }
-
-    // Assign varIndex to each element
-    for (const elem of pattern.elements) {
-        if (elem.isVar()) {
-            elem.varIndex = varIndexMap.get(elem.varName);
-        } else if (elem.isAltStart()) {
-            elem.varIndex = -1;
-        } else if (elem.isGroupEnd()) {
-            elem.varIndex = -2;
-        } else if (elem.isFinish()) {
-            elem.varIndex = -3;
-        }
-    }
-
     // Calculate max depth
     pattern.maxDepth = Math.max(...pattern.elements.map(e => e.depth), 0);
-    pattern.variables = Array.from(varIndexMap.keys());
 
     return pattern;
+}
+
+/*
+ * Collect variable names from AST in order of appearance
+ */
+function collectVariables(node, varIdMap) {
+    if (!node) return;
+
+    if (node.type === 'VAR') {
+        if (!varIdMap.has(node.name)) {
+            varIdMap.set(node.name, varIdMap.size);
+        }
+    } else if (node.type === 'SEQ') {
+        for (const item of node.items) {
+            collectVariables(item, varIdMap);
+        }
+    } else if (node.type === 'GROUP') {
+        collectVariables(node.content, varIdMap);
+    } else if (node.type === 'ALT') {
+        for (const alt of node.alternatives) {
+            collectVariables(alt, varIdMap);
+        }
+    }
 }
 
 // ------ Optimizer ------
@@ -699,15 +704,16 @@ function astToString(node, parentType = null) {
 
 // ------ AST Flattener ------
 
-function flattenAST(node, pattern, depth) {
+function flattenAST(node, pattern, depth, varIdMap) {
     if (!node) return;
 
     if (node.type === 'SEQ') {
         for (const item of node.items) {
-            flattenAST(item, pattern, depth);
+            flattenAST(item, pattern, depth, varIdMap);
         }
     } else if (node.type === 'VAR') {
-        const elem = new PatternElement(node.name);
+        const varId = varIdMap.get(node.name);
+        const elem = new PatternElement(varId);
         elem.min = node.min;
         elem.max = node.max;
         elem.depth = depth;
@@ -716,11 +722,11 @@ function flattenAST(node, pattern, depth) {
         const groupStartIdx = pattern.elements.length;
 
         // Flatten group content
-        flattenAST(node.content, pattern, depth + 1);
+        flattenAST(node.content, pattern, depth + 1, varIdMap);
 
         // Add group end marker only if this group has quantifier other than {1,1}
         if (node.min !== 1 || node.max !== 1) {
-            const groupEnd = new PatternElement('#END');
+            const groupEnd = new PatternElement(-2);  // -2 = #END
             // GROUP_END uses parent depth for counting group iterations
             groupEnd.depth = depth;
             groupEnd.min = node.min;
@@ -730,7 +736,7 @@ function flattenAST(node, pattern, depth) {
         }
     } else if (node.type === 'ALT') {
         // ALT_START.next points to first alternative start
-        const altStart = new PatternElement('#ALT');
+        const altStart = new PatternElement(-1);  // -1 = #ALT
         altStart.depth = depth;
         pattern.elements.push(altStart);
 
@@ -744,7 +750,7 @@ function flattenAST(node, pattern, depth) {
             const altBranchStart = pattern.elements.length;
             altBranchStarts.push(altBranchStart);
 
-            flattenAST(alt, pattern, depth + 1);
+            flattenAST(alt, pattern, depth + 1, varIdMap);
 
             // Mark where this alternative ends
             if (pattern.elements.length > altBranchStart) {

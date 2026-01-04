@@ -23,6 +23,21 @@ const {
 
 // ============== Test Cases ==============
 
+function getVarName(pattern, varId) {
+    if (varId === -1) return '#ALT';
+    if (varId === -2) return '#END';
+    if (varId === -3) return '#FIN';
+    if (varId >= 0 && varId < pattern.variables.length) {
+        return pattern.variables[varId];
+    }
+    return '-';
+}
+
+function pathToString(pattern, path) {
+    if (!path || path.length === 0) return '∅';
+    return path.map(varId => pattern.variables[varId] || varId).join(' ');
+}
+
 function printPattern(pattern) {
     console.log(`\nVariables: ${pattern.variables.join(', ')}  |  MaxDepth: ${pattern.maxDepth}`);
     console.log('\nPattern Elements:');
@@ -30,12 +45,13 @@ function printPattern(pattern) {
     console.log('-----+------+-------+-----+-----+------+------');
     for (let i = 0; i < pattern.elements.length; i++) {
         const e = pattern.elements[i];
+        const varName = getVarName(pattern, e.varId);
         const maxStr = e.max === Infinity ? '∞' : e.max;
         const idxStr = i.toString().padStart(2, ' ');
         const nextStr = e.next >= 0 ? e.next.toString().padStart(2, ' ') : ' -';
         const jumpStr = e.jump >= 0 ? e.jump.toString().padStart(2, ' ') : ' -';
         console.log(
-            `[${idxStr}] | ${(e.varName || '-').padEnd(4)} | ${e.depth}     | ${e.min}   | ${maxStr.toString().padEnd(3)} | ${nextStr}   | ${jumpStr}`
+            `[${idxStr}] | ${varName.padEnd(4)} | ${e.depth}     | ${e.min}   | ${maxStr.toString().padEnd(3)} | ${nextStr}   | ${jumpStr}`
         );
     }
 }
@@ -86,10 +102,10 @@ function runTest(name, patternStr, inputs, expectedMatch, verbose = false) {
                         for (const s of abs.states) {
                             const elem = pattern.elements[s.elementIndex];
                             if (!elem) continue;
-                            const stateInfo = `[${s.elementIndex}:${elem.varName}]`;
+                            const stateInfo = `[${s.elementIndex}:${getVarName(pattern, elem.varId)}]`;
                             for (let pathIdx = 0; pathIdx < s.matchedPaths.length; pathIdx++) {
                                 const path = s.matchedPaths[pathIdx];
-                                const pathStr = path.join(' ') || '∅';
+                                const pathStr = pathToString(pattern, path);
                                 if (pathIdx === 0) {
                                     console.log(`      state: ${pathStr} → ${stateInfo}`);
                                 } else {
@@ -156,17 +172,17 @@ function runTest(name, patternStr, inputs, expectedMatch, verbose = false) {
                     for (const [elemIdx, group] of groups) {
                         const elem = pattern.elements[elemIdx];
                         if (!elem) continue;
-                        const stateInfo = `[${elemIdx}:${elem.varName}]`;
+                        const stateInfo = `[${elemIdx}:${getVarName(pattern, elem.varId)}]`;
 
                         // Merged paths first
                         for (const path of group.mergedPaths) {
-                            const pathStr = path.join(' ') || '∅';
+                            const pathStr = pathToString(pattern, path);
                             console.log(`      state(merged): ${pathStr} → ${stateInfo}`);
                         }
 
                         // Active paths
                         for (let i = 0; i < group.activePaths.length; i++) {
-                            const pathStr = group.activePaths[i].join(' ') || '∅';
+                            const pathStr = pathToString(pattern, group.activePaths[i]);
                             if (i === 0) {
                                 console.log(`      state: ${pathStr} → ${stateInfo}`);
                             } else {
@@ -177,15 +193,16 @@ function runTest(name, patternStr, inputs, expectedMatch, verbose = false) {
                 }
 
                 // Show completed paths if matched (each on separate line)
-                // Path format: [id, ...vars] - ID at the front
+                // Path format: [id, ...varIds] - ID at the front
                 if (isMatched && hasCompletedPaths) {
                     const completedPaths = ctx.completedPaths;
                     const maxLen = Math.max(...completedPaths.map(p => p.length), 0);
                     const finalPaths = completedPaths.filter(p => p.length === maxLen);
                     for (const path of finalPaths) {
-                        // path[0] is ID, rest is the matched variables
-                        const pathVars = path.slice(1);
-                        console.log(`      match: ${pathVars.join(' ')} → ✓`);
+                        // path[0] is ID, rest is the matched varIds
+                        const pathVarIds = path.slice(1);
+                        const pathStr = pathToString(pattern, pathVarIds);
+                        console.log(`      match: ${pathStr} → ✓`);
                     }
 
                     if (!matched) {
