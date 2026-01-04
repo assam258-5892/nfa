@@ -1,38 +1,21 @@
-// ============== NFA Runtime (RPR_NFA_CONCEPT.md) ==============
+// ============== NFA Runtime (docs/4 executor.txt) ==============
 // Requires: parser.js
-
-/**
- * Global sequence counter for Lexical Order tracking
- * Each path gets a sequence number when created, preserving creation order
- */
-var _pathSeq = 0;
-
-function resetPathSeq() {
-    _pathSeq = 0;
-}
 
 /**
  * Summary: Aggregate values and paths
  * - aggregates: {} (placeholder for SUM, COUNT, FIRST, LAST, MIN, MAX)
- * - paths: Array of {seq, path} objects for Lexical Order preservation
+ * - paths: Array of paths (insertion order = Lexical Order)
  */
 class Summary {
     constructor(paths) {
         if (paths === undefined) paths = [[]];
         this.aggregates = {};  // Future: { sum: 0, count: 0, first: null, last: null, min: null, max: null }
-        // Convert plain arrays to {seq, path} objects if needed
         this.paths = [];
         for (var i = 0; i < paths.length; i++) {
             var p = paths[i];
-            if (Array.isArray(p)) {
-                var pathCopy = [];
-                for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
-                this.paths.push({ seq: _pathSeq++, path: pathCopy });
-            } else {
-                var pathCopy2 = [];
-                for (var j = 0; j < p.path.length; j++) pathCopy2.push(p.path[j]);
-                this.paths.push({ seq: p.seq, path: pathCopy2 });
-            }
+            var pathCopy = [];
+            for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
+            this.paths.push(pathCopy);
         }
     }
 
@@ -42,25 +25,8 @@ class Summary {
         for (var i = 0; i < this.paths.length; i++) {
             var p = this.paths[i];
             var pathCopy = [];
-            for (var j = 0; j < p.path.length; j++) pathCopy.push(p.path[j]);
-            s.paths.push({ seq: p.seq, path: pathCopy });
-        }
-        var keys = Object.keys(this.aggregates);
-        for (var i = 0; i < keys.length; i++) {
-            s.aggregates[keys[i]] = this.aggregates[keys[i]];
-        }
-        return s;
-    }
-
-    // Clone with new sequence numbers for forking (branch point)
-    fork() {
-        var s = new Summary([]);
-        s.paths = [];
-        for (var i = 0; i < this.paths.length; i++) {
-            var p = this.paths[i];
-            var pathCopy = [];
-            for (var j = 0; j < p.path.length; j++) pathCopy.push(p.path[j]);
-            s.paths.push({ seq: _pathSeq++, path: pathCopy });
+            for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
+            s.paths.push(pathCopy);
         }
         var keys = Object.keys(this.aggregates);
         for (var i = 0; i < keys.length; i++) {
@@ -72,7 +38,7 @@ class Summary {
     withMatch(varId) {
         var s = this.clone();
         for (var i = 0; i < s.paths.length; i++) {
-            s.paths[i].path.push(varId);
+            s.paths[i].push(varId);
         }
         return s;
     }
@@ -81,15 +47,15 @@ class Summary {
         // Build existing set as object for O(1) lookup
         var existing = {};
         for (var i = 0; i < this.paths.length; i++) {
-            existing[this.paths[i].path.join(',')] = true;
+            existing[this.paths[i].join(',')] = true;
         }
         for (var i = 0; i < other.paths.length; i++) {
             var p = other.paths[i];
-            var key = p.path.join(',');
+            var key = p.join(',');
             if (!existing[key]) {
                 var pathCopy = [];
-                for (var j = 0; j < p.path.length; j++) pathCopy.push(p.path[j]);
-                this.paths.push({ seq: p.seq, path: pathCopy });
+                for (var j = 0; j < p.length; j++) pathCopy.push(p[j]);
+                this.paths.push(pathCopy);
                 existing[key] = true;
             }
         }
@@ -107,16 +73,15 @@ class Summary {
         return true;
     }
 
-    // Get paths sorted by sequence number (Lexical Order)
-    getSortedPaths() {
-        var sorted = [];
-        for (var i = 0; i < this.paths.length; i++) {
-            sorted.push(this.paths[i]);
-        }
-        sorted.sort(function(a, b) { return a.seq - b.seq; });
+    // Get paths in insertion order (Lexical Order)
+    getPaths() {
         var result = [];
-        for (var i = 0; i < sorted.length; i++) {
-            result.push(sorted[i].path);
+        for (var i = 0; i < this.paths.length; i++) {
+            var pathCopy = [];
+            for (var j = 0; j < this.paths[i].length; j++) {
+                pathCopy.push(this.paths[i][j]);
+            }
+            result.push(pathCopy);
         }
         return result;
     }
@@ -150,17 +115,6 @@ class MatchState {
         return new MatchState(this.elementIndex, countsCopy, this.summaries);
     }
 
-    // Fork with new sequence numbers for branch points (Lexical Order)
-    fork() {
-        var countsCopy = [];
-        for (var i = 0; i < this.counts.length; i++) countsCopy.push(this.counts[i]);
-        var s = new MatchState(this.elementIndex, countsCopy, null);
-        s.summaries = [];
-        for (var i = 0; i < this.summaries.length; i++) {
-            s.summaries.push(this.summaries[i].fork());
-        }
-        return s;
-    }
 
     withMatch(varId) {
         var s = this.clone();
@@ -194,7 +148,7 @@ class MatchState {
         }
     }
 
-    // Backward compatibility: get all paths from all summaries (sorted by Lexical Order)
+    // Get all paths from all summaries (insertion order = Lexical Order)
     getMatchedPaths() {
         var allPaths = [];
         for (var i = 0; i < this.summaries.length; i++) {
@@ -203,34 +157,12 @@ class MatchState {
                 allPaths.push(sum.paths[j]);
             }
         }
-        // Sort by sequence number to preserve Lexical Order
-        allPaths.sort(function(a, b) { return a.seq - b.seq; });
-        var result = [];
-        for (var i = 0; i < allPaths.length; i++) {
-            result.push(allPaths[i].path);
-        }
-        return result;
-    }
-
-    // Get paths with sequence info for Lexical Order tracking
-    getMatchedPathsWithSeq() {
-        var allPaths = [];
-        for (var i = 0; i < this.summaries.length; i++) {
-            var sum = this.summaries[i];
-            for (var j = 0; j < sum.paths.length; j++) {
-                allPaths.push(sum.paths[j]);
-            }
-        }
-        return allPaths;  // Array of {seq, path}
+        return allPaths;
     }
 
     // Getter for backward compatibility
     get matchedPaths() {
         return this.getMatchedPaths();
-    }
-
-    get matchedPathsWithSeq() {
-        return this.getMatchedPathsWithSeq();
     }
 
     hash() {
@@ -250,57 +182,75 @@ class MatchContext {
         this.matchEnd = -1;
         this.isCompleted = false;
         this.states = [];
-        this.completedPaths = [];    // Array of {seq, path} for Lexical Order
+        this.completedPaths = [];    // Array of paths (insertion order = Lexical Order)
         this._pathSet = {};          // Object instead of Set for path dedup
         this._greedyFallback = null;  // Best path preserved for greedy fallback
     }
 
-    addCompletedPath(path, seq) {
-        if (seq === undefined) seq = Infinity;
+    addCompletedPath(path) {
         if (!path || path.length === 0) return;
         var key = path.join(',');
         if (!this._pathSet[key]) {
             this._pathSet[key] = true;
             var newPath = [this.id];
             for (var i = 0; i < path.length; i++) newPath.push(path[i]);
-            this.completedPaths.push({ seq: seq, path: newPath });
+            this.completedPaths.push(newPath);
         }
     }
 
-    // Get completed paths sorted by Lexical Order (seq)
-    getSortedCompletedPaths() {
-        var sorted = [];
-        for (var i = 0; i < this.completedPaths.length; i++) {
-            sorted.push(this.completedPaths[i]);
-        }
-        sorted.sort(function(a, b) { return a.seq - b.seq; });
+    // Get completed paths in insertion order (Lexical Order)
+    getCompletedPaths() {
         var result = [];
-        for (var i = 0; i < sorted.length; i++) {
-            result.push(sorted[i].path);
+        for (var i = 0; i < this.completedPaths.length; i++) {
+            var pathCopy = [];
+            for (var j = 0; j < this.completedPaths[i].length; j++) {
+                pathCopy.push(this.completedPaths[i][j]);
+            }
+            result.push(pathCopy);
         }
         return result;
     }
 }
 
+// SKIP mode constants
+var SKIP_PAST_LAST = 'PAST_LAST';
+var SKIP_TO_NEXT = 'TO_NEXT';
+
+// Output mode constants
+var OUTPUT_ONE_ROW = 'ONE_ROW';
+var OUTPUT_ALL_ROWS = 'ALL_ROWS';
+
 /**
  * NFAExecutor: Main execution engine
  */
 class NFAExecutor {
-    constructor(pattern) {
+    constructor(pattern, options) {
+        if (options === undefined) options = {};
         this.pattern = pattern;
         this.contexts = [];
         this.currentRow = -1;
         this.history = [];
+        // SKIP mode: PAST_LAST (default) or TO_NEXT
+        this.skipMode = options.skipMode || SKIP_PAST_LAST;
+        // Output mode: ONE_ROW (default) or ALL_ROWS
+        this.outputMode = options.outputMode || OUTPUT_ONE_ROW;
+        // Completed contexts queue (for emit ordering)
+        this.completedContexts = [];
+        // Emitted results
+        this.emittedResults = [];
+        // Last emitted matchEnd (for PAST_LAST mode)
+        this.lastEmittedEnd = -1;
         _ctxId = 0;
-        _pathSeq = 0;
     }
 
     reset() {
         this.contexts = [];
         this.currentRow = -1;
         this.history = [];
+        this.completedContexts = [];
+        this.emittedResults = [];
+        this.lastEmittedEnd = -1;
         _ctxId = 0;
-        _pathSeq = 0;
     }
 
     /**
@@ -399,7 +349,7 @@ class NFAExecutor {
             var ctx = this.contexts[i];
             if (ctx.states.length > 0 || ctx.isCompleted || deadContextIds[ctx.id]) {
                 var completedPathsMapped = [];
-                var sortedPaths = ctx.getSortedCompletedPaths();
+                var sortedPaths = ctx.getCompletedPaths();
                 for (var j = 0; j < sortedPaths.length; j++) {
                     var p = sortedPaths[j];
                     var mapped = [p[0]];
@@ -443,9 +393,12 @@ class NFAExecutor {
         for (var i = 0; i < trueVarKeys.length; i++) {
             inputCopy.push(parseInt(trueVarKeys[i]));
         }
-        this.history.push({ row: row, input: inputCopy, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs });
+        // 5. Queue completed contexts and emit results
+        var emitResult = this.emitRows(log);
 
-        // 5. Remove dead/completed contexts
+        this.history.push({ row: row, input: inputCopy, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs, emitted: emitResult.emitted, queued: emitResult.queued, discarded: emitResult.discarded });
+
+        // 6. Remove dead/completed contexts
         var aliveContexts = [];
         for (var i = 0; i < this.contexts.length; i++) {
             var ctx = this.contexts[i];
@@ -455,7 +408,183 @@ class NFAExecutor {
         }
         this.contexts = aliveContexts;
 
-        return { row: row, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs };
+        return { row: row, contexts: contextSnapshot, absorptions: absorptions, stateMerges: stateMerges, discardedStates: discardedStates, deadStates: deadStates, logs: logs, emitted: emitResult.emitted, queued: emitResult.queued, discarded: emitResult.discarded };
+    }
+
+    /**
+     * Emit completed matches based on SKIP mode
+     * Overview 5.5:
+     * - contexts[0] completed → emit immediately
+     * - contexts[1+] completed → queue in completedContexts
+     * - After emit, process queue by start order:
+     *   1. start >= current contexts[0].start → stop (not yet eligible)
+     *   2. PAST LAST: start <= lastEmittedEnd → discard, continue
+     *   3. TO NEXT: end >= contexts[0].start (overlaps) → stop (wait)
+     *   4. TO NEXT: end < contexts[0].start (no overlap) → emit, continue
+     */
+    emitRows(log) {
+        var emitted = [];
+        var queued = [];
+        var discarded = [];
+
+        // Find the earliest matchStart among all contexts (completed or not)
+        var earliestStart = Infinity;
+        for (var i = 0; i < this.contexts.length; i++) {
+            if (this.contexts[i].matchStart < earliestStart) {
+                earliestStart = this.contexts[i].matchStart;
+            }
+        }
+        // Also check completedContexts queue
+        for (var i = 0; i < this.completedContexts.length; i++) {
+            if (this.completedContexts[i].matchStart < earliestStart) {
+                earliestStart = this.completedContexts[i].matchStart;
+            }
+        }
+
+        // Check if there's any non-completed context at earliestStart
+        var hasActiveAtEarliest = false;
+        for (var i = 0; i < this.contexts.length; i++) {
+            if (this.contexts[i].matchStart === earliestStart && !this.contexts[i].isCompleted) {
+                hasActiveAtEarliest = true;
+                break;
+            }
+        }
+
+        // Move completed contexts to queue, but emit immediately if it's the earliest AND no active context at same start
+        for (var i = 0; i < this.contexts.length; i++) {
+            var ctx = this.contexts[i];
+            if (ctx.isCompleted && ctx.completedPaths.length > 0) {
+                // Check if already in queue
+                var inQueue = false;
+                for (var j = 0; j < this.completedContexts.length; j++) {
+                    if (this.completedContexts[j].id === ctx.id) {
+                        inQueue = true;
+                        break;
+                    }
+                }
+                if (!inQueue) {
+                    // Emit immediately only if: earliest start AND no active context at same start
+                    if (ctx.matchStart === earliestStart && !hasActiveAtEarliest) {
+                        // Check SKIP mode constraints before immediate emit
+                        var shouldEmit = true;
+                        if (this.skipMode === SKIP_PAST_LAST && ctx.matchStart <= this.lastEmittedEnd) {
+                            discarded.push({ contextId: ctx.id, matchStart: ctx.matchStart, matchEnd: ctx.matchEnd, reason: 'SKIP PAST LAST: overlaps with emitted match (start=' + ctx.matchStart + ' <= lastEnd=' + this.lastEmittedEnd + ')' });
+                            if (log) log('🗑️ DISCARDED ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ') - SKIP PAST LAST: overlaps with emitted match', 'warning');
+                            shouldEmit = false;
+                        }
+                        if (shouldEmit) {
+                            if (log) log('📤 EMITTING ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ')', 'success');
+                            var result = this.emitContext(ctx, log);
+                            emitted.push(result);
+                            this.lastEmittedEnd = ctx.matchEnd;
+                        }
+                    } else {
+                        // Queue it: either not earliest, or has active context at same start
+                        this.completedContexts.push(ctx);
+                        queued.push({ contextId: ctx.id, matchStart: ctx.matchStart, matchEnd: ctx.matchEnd });
+                        if (log) log('📥 QUEUED ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ') - waiting for earlier contexts', 'info');
+                    }
+                }
+            }
+        }
+
+        // Sort queue by matchStart
+        this.completedContexts.sort(function(a, b) {
+            return a.matchStart - b.matchStart;
+        });
+
+        // Get current active context start (first non-completed context)
+        var activeCtxStart = Infinity;
+        for (var i = 0; i < this.contexts.length; i++) {
+            if (!this.contexts[i].isCompleted) {
+                activeCtxStart = this.contexts[i].matchStart;
+                break;
+            }
+        }
+
+        // Process queue
+        var toRemove = [];
+        for (var i = 0; i < this.completedContexts.length; i++) {
+            var ctx = this.completedContexts[i];
+
+            // Rule 1: start >= activeCtxStart → stop (not yet eligible to emit)
+            if (ctx.matchStart >= activeCtxStart) {
+                break;
+            }
+
+            if (this.skipMode === SKIP_PAST_LAST) {
+                // Rule 2: PAST LAST - start <= lastEmittedEnd → discard
+                if (ctx.matchStart <= this.lastEmittedEnd) {
+                    toRemove.push(i);
+                    discarded.push({ contextId: ctx.id, matchStart: ctx.matchStart, matchEnd: ctx.matchEnd, reason: 'SKIP PAST LAST: overlaps with emitted match (start=' + ctx.matchStart + ' <= lastEnd=' + this.lastEmittedEnd + ')' });
+                    if (log) log('🗑️ DISCARDED ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ') - SKIP PAST LAST: overlaps with emitted match (start=' + ctx.matchStart + ' <= lastEnd=' + this.lastEmittedEnd + ')', 'warning');
+                    continue;
+                }
+            } else if (this.skipMode === SKIP_TO_NEXT) {
+                // Rule 3: TO NEXT - end >= activeCtxStart → stop (wait for active to complete)
+                if (ctx.matchEnd >= activeCtxStart) {
+                    break;
+                }
+                // Rule 4: TO NEXT - end < activeCtxStart → emit
+            }
+
+            // Emit this context
+            if (log) log('📤 EMITTING ctx #' + ctx.id + ' (rows ' + ctx.matchStart + '-' + ctx.matchEnd + ')', 'success');
+            var result = this.emitContext(ctx, log);
+            emitted.push(result);
+            toRemove.push(i);
+            this.lastEmittedEnd = ctx.matchEnd;
+        }
+
+        // Remove emitted/discarded from queue (reverse order to preserve indices)
+        for (var i = toRemove.length - 1; i >= 0; i--) {
+            this.completedContexts.splice(toRemove[i], 1);
+        }
+
+        return { emitted: emitted, queued: queued, discarded: discarded };
+    }
+
+    /**
+     * Emit a single context's match result
+     */
+    emitContext(ctx, log) {
+        var self = this;
+        var paths = ctx.getCompletedPaths();
+
+        // Apply output mode
+        var outputPaths;
+        if (this.outputMode === OUTPUT_ONE_ROW) {
+            // ONE ROW: only first path (Lexical Order best)
+            outputPaths = paths.length > 0 ? [paths[0]] : [];
+        } else {
+            // ALL ROWS: all paths
+            outputPaths = paths;
+        }
+
+        // Convert varIds to variable names
+        var result = {
+            contextId: ctx.id,
+            matchStart: ctx.matchStart,
+            matchEnd: ctx.matchEnd,
+            paths: []
+        };
+        for (var i = 0; i < outputPaths.length; i++) {
+            var path = outputPaths[i];
+            // Skip first element (context id) in path
+            var mapped = [];
+            for (var j = 1; j < path.length; j++) {
+                mapped.push(self.pattern.variables[path[j]]);
+            }
+            result.paths.push(mapped);
+        }
+
+        this.emittedResults.push(result);
+        if (log) {
+            var pathStr = result.paths.map(function(p) { return '[' + p.join(',') + ']'; }).join(', ');
+            log('EMIT ctx #' + ctx.id + ' rows ' + ctx.matchStart + '-' + ctx.matchEnd + ': ' + pathStr, 'success');
+        }
+
+        return result;
     }
 
     /**
@@ -531,13 +660,12 @@ class NFAExecutor {
         // Merge duplicate active states
         ctx.states = this.mergeStates(ctx.states, stateMerges, ctx.id);
 
-        // Extract completed paths with Lexical Order (seq)
+        // Extract completed paths (insertion order = Lexical Order)
         for (var i = 0; i < completedStates.length; i++) {
             var state = completedStates[i];
-            var pathsWithSeq = state.matchedPathsWithSeq;
-            for (var j = 0; j < pathsWithSeq.length; j++) {
-                var p = pathsWithSeq[j];
-                ctx.addCompletedPath(p.path, p.seq);
+            var paths = state.matchedPaths;
+            for (var j = 0; j < paths.length; j++) {
+                ctx.addCompletedPath(paths[j]);
             }
         }
 
@@ -545,7 +673,7 @@ class NFAExecutor {
         if (ctx.completedPaths.length > 0) {
             var maxLen = 0;
             for (var i = 0; i < ctx.completedPaths.length; i++) {
-                var len = ctx.completedPaths[i].path.length - 1;
+                var len = ctx.completedPaths[i].length - 1;
                 if (len > maxLen) maxLen = len;
             }
             ctx.matchEnd = ctx.matchStart + maxLen - 1;
@@ -646,63 +774,60 @@ class NFAExecutor {
             // Active states exist and input has pattern variables - can potentially match longer
             // Greedy: preserve best completion for fallback, replace if longer found
 
-            // Collect all completed paths with their info (with seq for Lexical Order)
+            // Collect all completed paths (insertion order = Lexical Order)
             var allCompletedPaths = [];
             for (var i = 0; i < completedStates.length; i++) {
                 var state = completedStates[i];
-                var pathsWithSeq = state.matchedPathsWithSeq;
-                for (var j = 0; j < pathsWithSeq.length; j++) {
-                    allCompletedPaths.push(pathsWithSeq[j]);  // {seq, path}
+                var paths = state.matchedPaths;
+                for (var j = 0; j < paths.length; j++) {
+                    allCompletedPaths.push(paths[j]);
                 }
             }
 
-            // Select best path: longest first, keep Lexical Order (seq) for same length
+            // Select best path: first one with max length (Lexical Order preserved by insertion order)
             if (allCompletedPaths.length > 0) {
-                // Sort by length desc, then by seq asc
-                allCompletedPaths.sort(function(a, b) {
-                    if (b.path.length !== a.path.length) return b.path.length - a.path.length;
-                    return a.seq - b.seq;
-                });
-
                 var bestPath = allCompletedPaths[0];
+                for (var i = 1; i < allCompletedPaths.length; i++) {
+                    if (allCompletedPaths[i].length > bestPath.length) {
+                        bestPath = allCompletedPaths[i];
+                    }
+                }
 
                 // Replace greedy fallback if new best is longer
-                if (!ctx._greedyFallback || bestPath.path.length > ctx._greedyFallback.path.length) {
+                if (!ctx._greedyFallback || bestPath.length > ctx._greedyFallback.length) {
                     var pathCopy = [];
-                    for (var i = 0; i < bestPath.path.length; i++) pathCopy.push(bestPath.path[i]);
-                    ctx._greedyFallback = { seq: bestPath.seq, path: pathCopy };
+                    for (var i = 0; i < bestPath.length; i++) pathCopy.push(bestPath[i]);
+                    ctx._greedyFallback = pathCopy;
                     var varNames = [];
-                    for (var i = 0; i < bestPath.path.length; i++) {
-                        varNames.push(self.pattern.variables[bestPath.path[i]]);
+                    for (var i = 0; i < bestPath.length; i++) {
+                        varNames.push(self.pattern.variables[bestPath[i]]);
                     }
                     log('Greedy: updating fallback to: ' + varNames.join(' '), 'warning');
                 }
 
                 // Mark all as discarded (they're just candidates, not final)
                 for (var i = 0; i < allCompletedPaths.length; i++) {
-                    var p = allCompletedPaths[i];
                     discardedStates.push({
                         contextId: ctx.id,
                         elementIndex: -1, // #FIN
                         counts: [],
-                        matchedPaths: [p.path],
+                        matchedPaths: [allCompletedPaths[i]],
                         reason: 'greedy_defer'
                     });
                 }
             }
         } else {
             // No active states, or can't progress further, or no pattern match
-            // Finalize: add greedy fallback if exists, then all current completed paths (with Lexical Order)
+            // Finalize: add greedy fallback if exists, then all current completed paths
             if (ctx._greedyFallback) {
-                ctx.addCompletedPath(ctx._greedyFallback.path, ctx._greedyFallback.seq);
+                ctx.addCompletedPath(ctx._greedyFallback);
                 ctx._greedyFallback = null;
             }
             for (var i = 0; i < completedStates.length; i++) {
                 var state = completedStates[i];
-                var pathsWithSeq = state.matchedPathsWithSeq;
-                for (var j = 0; j < pathsWithSeq.length; j++) {
-                    var p = pathsWithSeq[j];
-                    ctx.addCompletedPath(p.path, p.seq);
+                var paths = state.matchedPaths;
+                for (var j = 0; j < paths.length; j++) {
+                    ctx.addCompletedPath(paths[j]);
                 }
             }
         }
@@ -711,7 +836,7 @@ class NFAExecutor {
         if (ctx.completedPaths.length > 0) {
             var maxLen = 0;
             for (var i = 0; i < ctx.completedPaths.length; i++) {
-                var len = ctx.completedPaths[i].path.length - 1;
+                var len = ctx.completedPaths[i].length - 1;
                 if (len > maxLen) maxLen = len;
             }
             ctx.matchEnd = ctx.matchStart + maxLen - 1;
@@ -853,7 +978,7 @@ class NFAExecutor {
                 log(varName + ' matched (' + newCount + '), reluctant advancing');
 
                 // Also stay (lower priority) - fork for new seq
-                var stayState = newState.fork();
+                var stayState = newState.clone();
                 results.push(stayState);
                 log(varName + ' matched (' + newCount + '), reluctant also staying');
             } else {
@@ -863,7 +988,7 @@ class NFAExecutor {
 
                 // Greedy: also fork to advance if min satisfied
                 if (newCount >= elem.min && !elem.reluctant) {
-                    var advanceState2 = newState.fork();  // fork for new seq
+                    var advanceState2 = newState.clone();  // fork for new seq
                     advanceState2.counts[elem.depth] = 0;
                     advanceState2.elementIndex = elem.next;
                     results.push(advanceState2);
@@ -903,7 +1028,7 @@ class NFAExecutor {
         while (altIdx >= 0 && altIdx < this.pattern.elements.length) {
             var altElem = this.pattern.elements[altIdx];
             // First alternative: clone (keep seq), others: fork (new seq)
-            var altState = isFirst ? state.clone() : state.fork();
+            var altState = isFirst ? state.clone() : state.clone();
             altState.elementIndex = altIdx;
 
             var subResults = this.transition(altState, trueVars, log);
@@ -974,7 +1099,7 @@ class NFAExecutor {
             log('Group end: count=' + count + ', reluctant exiting');
 
             // fork for second branch (new seq)
-            var repeatState2 = state.fork();
+            var repeatState2 = state.clone();
             repeatState2.counts[elem.depth] = count;
             this.resetInnerCounts(repeatState2, elem.depth);
             repeatState2.elementIndex = elem.jump;
@@ -990,7 +1115,7 @@ class NFAExecutor {
             log('Group end: count=' + count + ', greedy repeating');
 
             // fork for second branch (new seq)
-            var exitState3 = state.fork();
+            var exitState3 = state.clone();
             exitState3.counts[elem.depth] = 0;
             exitState3.elementIndex = elem.next;
             results.push(exitState3);
@@ -1046,7 +1171,7 @@ class NFAExecutor {
                 // Also explore skip path if min satisfied (fork for new seq)
                 var count = state.counts[elem.depth] || 0;
                 if (count >= elem.min) {
-                    var skip = state.fork();
+                    var skip = state.clone();
                     skip.counts[elem.depth] = 0;
                     skip.elementIndex = elem.next;
                     queue.push(skip);
@@ -1060,7 +1185,7 @@ class NFAExecutor {
                 if (endElem) {
                     var count2 = state.counts[endElem.depth] || 0;
                     if (count2 >= endElem.min) {
-                        var skip2 = state.fork();
+                        var skip2 = state.clone();
                         skip2.counts[endElem.depth] = 0;
                         skip2.elementIndex = endElem.next;
                         queue.push(skip2);
@@ -1093,7 +1218,7 @@ class NFAExecutor {
                     queue.push(exit2);
 
                     // fork for second branch (new seq)
-                    var repeat2 = state.fork();
+                    var repeat2 = state.clone();
                     repeat2.counts[elem.depth] = count3;
                     this.resetInnerCounts(repeat2, elem.depth);
                     repeat2.elementIndex = elem.jump;
@@ -1107,7 +1232,7 @@ class NFAExecutor {
                     queue.push(repeat3);
 
                     // fork for second branch (new seq)
-                    var exit3 = state.fork();
+                    var exit3 = state.clone();
                     exit3.counts[elem.depth] = 0;
                     exit3.elementIndex = elem.next;
                     queue.push(exit3);
@@ -1399,6 +1524,10 @@ if (typeof window !== 'undefined') {
     window.MatchState = MatchState;
     window.MatchContext = MatchContext;
     window.NFAExecutor = NFAExecutor;
+    window.SKIP_PAST_LAST = SKIP_PAST_LAST;
+    window.SKIP_TO_NEXT = SKIP_TO_NEXT;
+    window.OUTPUT_ONE_ROW = OUTPUT_ONE_ROW;
+    window.OUTPUT_ALL_ROWS = OUTPUT_ALL_ROWS;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -1410,6 +1539,10 @@ if (typeof module !== 'undefined' && module.exports) {
         Summary,
         MatchState,
         MatchContext,
-        NFAExecutor
+        NFAExecutor,
+        SKIP_PAST_LAST,
+        SKIP_TO_NEXT,
+        OUTPUT_ONE_ROW,
+        OUTPUT_ALL_ROWS
     };
 }

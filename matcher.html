@@ -326,6 +326,36 @@
             font-weight: bold;
             margin-bottom: 10px;
         }
+        .emit-banner {
+            background: linear-gradient(90deg, #ffd700, #ff8800);
+            color: #0a0a0f;
+            padding: 12px;
+            border-radius: 6px;
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+        .queued-banner {
+            background: linear-gradient(90deg, #4a90d9, #667eea);
+            color: #fff;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        .discarded-banner {
+            background: linear-gradient(90deg, #e94560, #ff6b6b);
+            color: #fff;
+            padding: 10px;
+            border-radius: 6px;
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
         .no-context {
             color: #666;
             text-align: center;
@@ -349,6 +379,39 @@
         .example-btn:hover {
             border-color: #00d9ff;
             color: #00d9ff;
+        }
+        .mode-toggles {
+            display: flex;
+            gap: 6px;
+        }
+        .toggle-btn {
+            background: transparent;
+            border: 1px solid #3a3a4a;
+            color: #888;
+            padding: 5px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 10px;
+            font-family: inherit;
+            transition: all 0.2s;
+            width: 90px;
+            text-align: center;
+        }
+        .toggle-btn:hover {
+            border-color: #00d9ff;
+            color: #00d9ff;
+        }
+        .toggle-btn.active {
+            background: #00d9ff;
+            border-color: #00d9ff;
+            color: #0a0a0f;
+            font-weight: bold;
+        }
+        .toggle-btn.alt {
+            background: #ff8800;
+            border-color: #ff8800;
+            color: #0a0a0f;
+            font-weight: bold;
         }
         .variables-display {
             color: #666;
@@ -374,7 +437,7 @@
             <div class="config-section">
                 <div class="config-row">
                     <label>Pattern:</label>
-                    <input type="text" id="patternInput" value="( A | ( B | ( C | ( D | E ) ) ) )" placeholder="e.g., A B+ C*">
+                    <input type="text" id="patternInput" value="A B C D E F G I | A B C D E F | B C D | C D E | G | H I" placeholder="e.g., A B+ C*">
                     <button class="btn" onclick="applyPattern()">Apply</button>
                     <button class="btn btn-reset" onclick="resetAll()">Reset</button>
                 </div>
@@ -386,6 +449,7 @@
                         <button class="example-btn" onclick="loadExample('( A | B | C )')">A | B | C</button>
                         <button class="example-btn" onclick="loadExample('( ( A B ) | ( C D ) ) E')">((A B)|(C D)) E</button>
                         <button class="example-btn" onclick="loadExample('( A B ){2,3} C')">(A B){2,3} C</button>
+                        <button class="example-btn" onclick="loadExample('A+? B')">A+? B</button>
                         <button class="example-btn" onclick="loadExample('( ( A | B )+ ( C | D )* ){1,2} ( ( E F ) | ( G H ) ){2,} I?')">EXTREME</button>
                     </div>
                 </div>
@@ -397,12 +461,16 @@
                 </div>
                 <div class="config-row">
                     <label>Optimize:</label>
-                    <div class="examples">
+                    <div class="examples" style="flex: 1;">
                         <button class="example-btn" onclick="applyOptimization('reset')" title="Remove all optimizations">↺ Reset</button>
                         <button class="example-btn" onclick="applyOptimization('unwrap')" title="Remove {1,1} groups, single-item wrappers, flatten nested structures&#10;Examples:&#10;• ((A)) → A&#10;• (A B){1,1} → A B&#10;• (A B) C → A B C&#10;• A | (B | C) → A | B | C">⚡ Unwrap</button>
                         <button class="example-btn" onclick="applyOptimization('removeDup')" title="Remove duplicate alternatives&#10;Examples:&#10;• A | B | A → A | B&#10;• (A B) | (C D) | (A B) → (A B) | (C D)">✗ Dup</button>
                         <button class="example-btn" onclick="applyOptimization('optimizeQuant')" title="Optimize quantifiers&#10;Examples:&#10;• (A{3}){2} → A{6}&#10;• (A{2,5}){3} → A{6,15}&#10;• A A A → A{3}">∑ Quant</button>
                         <button class="example-btn" onclick="applyOptimization('all')" title="Apply all optimizations in order">⚡ All</button>
+                    </div>
+                    <div class="mode-toggles">
+                        <button class="toggle-btn active" id="skipModeBtn" onclick="toggleSkipMode()" title="SKIP PAST LAST: resume after last matched row (no overlap)&#10;SKIP TO NEXT: resume at next row (overlapping matches)">PAST LAST</button>
+                        <button class="toggle-btn active" id="outputModeBtn" onclick="toggleOutputMode()" title="ONE ROW: output only first match (Lexical Order)&#10;ALL ROWS: output all possible matches">ONE ROW</button>
                     </div>
                 </div>
                 <div class="config-row">
@@ -456,6 +524,62 @@
         let currentPattern = null;
         let executor = null;
 
+        // Current mode state
+        let currentSkipMode = 'PAST_LAST';
+        let currentOutputMode = 'ONE_ROW';
+
+        function getExecutorOptions() {
+            return {
+                skipMode: currentSkipMode,
+                outputMode: currentOutputMode
+            };
+        }
+
+        function toggleSkipMode() {
+            const btn = document.getElementById('skipModeBtn');
+            if (currentSkipMode === 'PAST_LAST') {
+                currentSkipMode = 'TO_NEXT';
+                btn.textContent = 'TO NEXT';
+                btn.classList.remove('active');
+                btn.classList.add('alt');
+            } else {
+                currentSkipMode = 'PAST_LAST';
+                btn.textContent = 'PAST LAST';
+                btn.classList.remove('alt');
+                btn.classList.add('active');
+            }
+            updateExecutorOptions();
+        }
+
+        function toggleOutputMode() {
+            const btn = document.getElementById('outputModeBtn');
+            if (currentOutputMode === 'ONE_ROW') {
+                currentOutputMode = 'ALL_ROWS';
+                btn.textContent = 'ALL ROWS';
+                btn.classList.remove('active');
+                btn.classList.add('alt');
+            } else {
+                currentOutputMode = 'ONE_ROW';
+                btn.textContent = 'ONE ROW';
+                btn.classList.remove('alt');
+                btn.classList.add('active');
+            }
+            updateExecutorOptions();
+        }
+
+        function updateExecutorOptions() {
+            if (!executor || !currentPattern) return;
+            // Reset all state and apply new options
+            executor.reset();
+            executor.skipMode = currentSkipMode;
+            executor.outputMode = currentOutputMode;
+            // Update UI
+            document.getElementById('rowCounter').textContent = '0';
+            renderPatternDisplay();
+            renderHistory();
+            renderCurrentState();
+        }
+
         function applyPattern() {
             const patternStr = document.getElementById('patternInput').value.trim();
             if (!patternStr) return;
@@ -469,7 +593,7 @@
                 document.getElementById('optimizedPattern').textContent = astToString(ast);
 
                 currentPattern = parsePattern(patternStr);
-                executor = new NFAExecutor(currentPattern);
+                executor = new NFAExecutor(currentPattern, getExecutorOptions());
                 document.getElementById('parseError').textContent = '';
                 document.getElementById('variablesDisplay').textContent = currentPattern.variables.join(', ');
                 document.getElementById('rowCounter').textContent = '0';
@@ -523,7 +647,7 @@
                 // Convert optimized AST to Pattern
                 const pattern = compileAST(ast);
                 currentPattern = pattern;
-                executor = new NFAExecutor(currentPattern);
+                executor = new NFAExecutor(currentPattern, getExecutorOptions());
 
                 document.getElementById('parseError').textContent = '';
                 document.getElementById('variablesDisplay').textContent = currentPattern.variables.join(', ');
@@ -695,6 +819,28 @@
                 if (hasMatch) {
                     const completedCtx = entry.contexts.find(ctx => ctx.isCompleted);
                     html += `<div class="match-banner">MATCH FOUND: Row ${completedCtx.matchStart} → Row ${completedCtx.matchEnd}</div>`;
+                }
+
+                // Show queued matches
+                if (entry.queued && entry.queued.length > 0) {
+                    for (const q of entry.queued) {
+                        html += `<div class="queued-banner">📥 QUEUED #${q.contextId} (rows ${q.matchStart}-${q.matchEnd}) - waiting for earlier contexts</div>`;
+                    }
+                }
+
+                // Show discarded matches
+                if (entry.discarded && entry.discarded.length > 0) {
+                    for (const d of entry.discarded) {
+                        html += `<div class="discarded-banner">🗑️ DISCARDED #${d.contextId} (rows ${d.matchStart}-${d.matchEnd}) - ${d.reason}</div>`;
+                    }
+                }
+
+                // Show emitted results for this row
+                if (entry.emitted && entry.emitted.length > 0) {
+                    for (const emit of entry.emitted) {
+                        const pathStr = emit.paths.map(p => p.join(' ')).join(', ');
+                        html += `<div class="emit-banner">📤 EMIT #${emit.contextId} rows ${emit.matchStart}-${emit.matchEnd}:  ${pathStr}</div>`;
+                    }
                 }
 
                 if (entry.contexts.length === 0) {
