@@ -2,41 +2,102 @@
 // Requires: parser.js
 
 /**
+ * Summary: Aggregate values and paths
+ * - aggregates: {} (placeholder for SUM, COUNT, FIRST, LAST, MIN, MAX)
+ * - paths: varId arrays (e.g., [[0,0,1], [0,1,1]])
+ */
+class Summary {
+    constructor(paths = [[]]) {
+        this.aggregates = {};  // Future: { sum: 0, count: 0, first: null, last: null, min: null, max: null }
+        this.paths = paths.map(p => [...p]);
+    }
+
+    clone() {
+        const s = new Summary(this.paths);
+        s.aggregates = { ...this.aggregates };
+        return s;
+    }
+
+    withMatch(varId) {
+        const s = this.clone();
+        s.paths = s.paths.map(p => [...p, varId]);
+        // Future: update aggregates here
+        return s;
+    }
+
+    mergePaths(other) {
+        const existing = new Set(this.paths.map(p => p.join(',')));
+        for (const path of other.paths) {
+            const key = path.join(',');
+            if (!existing.has(key)) {
+                this.paths.push([...path]);
+                existing.add(key);
+            }
+        }
+    }
+
+    // Check if aggregates are equal (for Summary merge)
+    aggregatesEqual(other) {
+        const keys1 = Object.keys(this.aggregates);
+        const keys2 = Object.keys(other.aggregates);
+        if (keys1.length !== keys2.length) return false;
+        return keys1.every(k => this.aggregates[k] === other.aggregates[k]);
+    }
+}
+
+/**
  * MatchState: NFA runtime state
  * - elementIndex: current pattern position (-1 = completed)
  * - counts[]: repetition counts per depth level
- * - matchedPaths[]: paths as varId arrays (e.g., [[0,0,1], [0,1,1]])
+ * - summaries[]: Summary array (maintains creation order)
  */
 class MatchState {
-    constructor(elementIndex, counts = [], matchedPaths = [[]]) {
+    constructor(elementIndex, counts = [], summaries = null) {
         this.elementIndex = elementIndex;
         this.counts = [...counts];
-        this.matchedPaths = matchedPaths.map(p => [...p]);
+        this.summaries = summaries
+            ? summaries.map(s => s.clone())
+            : [new Summary([[]])];
     }
 
     clone() {
         return new MatchState(
             this.elementIndex,
             [...this.counts],
-            this.matchedPaths.map(p => [...p])
+            this.summaries
         );
     }
 
     withMatch(varId) {
         const s = this.clone();
-        s.matchedPaths = s.matchedPaths.map(p => [...p, varId]);
+        s.summaries = s.summaries.map(sum => sum.withMatch(varId));
         return s;
     }
 
-    mergePaths(other) {
-        const existing = new Set(this.matchedPaths.map(p => p.join(',')));
-        for (const path of other.matchedPaths) {
-            const key = path.join(',');
-            if (!existing.has(key)) {
-                this.matchedPaths.push([...path]);
-                existing.add(key);
+    /**
+     * Merge summaries from another state
+     * - Same aggregates → merge paths
+     * - Different aggregates → add as new summary
+     */
+    mergeSummaries(other) {
+        for (const otherSum of other.summaries) {
+            // Find matching summary by aggregates
+            const match = this.summaries.find(s => s.aggregatesEqual(otherSum));
+            if (match) {
+                match.mergePaths(otherSum);
+            } else {
+                this.summaries.push(otherSum.clone());
             }
         }
+    }
+
+    // Backward compatibility: get all paths from all summaries
+    get matchedPaths() {
+        const allPaths = [];
+        for (const sum of this.summaries) {
+            allPaths.push(...sum.paths);
+        }
+        return allPaths;
     }
 
     hash() {
@@ -58,6 +119,7 @@ class MatchContext {
         this.states = [];
         this.completedPaths = [];
         this._pathSet = new Set();
+        this._greedyFallback = null;  // Best path preserved for greedy fallback
     }
 
     addCompletedPath(path) {
@@ -222,7 +284,7 @@ class NFAExecutor {
             if (state.elementIndex === -1) {
                 const hash = state.hash();
                 if (completedStates.has(hash)) {
-                    completedStates.get(hash).mergePaths(state);
+                    completedStates.get(hash).mergeSummaries(state);
                 } else {
                     completedStates.set(hash, state);
                 }
@@ -282,7 +344,7 @@ class NFAExecutor {
             if (state.elementIndex === -1) {
                 const hash = state.hash();
                 if (completedStates.has(hash)) {
-                    completedStates.get(hash).mergePaths(state);
+                    completedStates.get(hash).mergeSummaries(state);
                 } else {
                     completedStates.set(hash, state);
                 }
@@ -319,7 +381,7 @@ class NFAExecutor {
 
         if (completedStates.size > 0 && ctx.states.length > 0 && canProgressFurther && hasPatternMatch) {
             // Active states exist and input has pattern variables - can potentially match longer
-            // Greedy: preserve best completion for fallback, discard others
+            // Greedy: preserve best completion for fallback, replace if longer found
 
             // Collect all completed paths with their info
             const allCompletedPaths = [];
@@ -329,35 +391,44 @@ class NFAExecutor {
                 }
             }
 
-            // Select best path: longest first, then lexical order
+            // Select best path: longest first, keep insertion order for same length
             if (allCompletedPaths.length > 0) {
-                allCompletedPaths.sort((a, b) => {
-                    // Longer path wins
-                    if (b.length !== a.length) return b.length - a.length;
-                    // Same length: lexical order (earlier = better)
-                    return a.join(' ').localeCompare(b.join(' '));
-                });
+                // Find longest path (first one if multiple have same max length)
+                let maxLen = 0;
+                let bestIdx = 0;
+                for (let i = 0; i < allCompletedPaths.length; i++) {
+                    if (allCompletedPaths[i].length > maxLen) {
+                        maxLen = allCompletedPaths[i].length;
+                        bestIdx = i;
+                    }
+                }
 
-                const bestPath = allCompletedPaths[0];
-                ctx.addCompletedPath(bestPath);
-                log(`Greedy: preserving best completion for fallback: ${bestPath.join(' ')}`, 'warning');
+                const bestPath = allCompletedPaths[bestIdx];
 
-                // Mark others as discarded
-                for (let i = 1; i < allCompletedPaths.length; i++) {
+                // Replace greedy fallback if new best is longer
+                if (!ctx._greedyFallback || bestPath.length > ctx._greedyFallback.length) {
+                    ctx._greedyFallback = [...bestPath];
+                    log(`Greedy: updating fallback to: ${bestPath.map(id => this.pattern.variables[id]).join(' ')}`, 'warning');
+                }
+
+                // Mark all as discarded (they're just candidates, not final)
+                for (const path of allCompletedPaths) {
                     discardedStates.push({
                         contextId: ctx.id,
                         elementIndex: -1, // #FIN
                         counts: [],
-                        matchedPaths: [allCompletedPaths[i]],
-                        reason: 'shorter_match'
+                        matchedPaths: [path],
+                        reason: 'greedy_defer'
                     });
-                }
-                if (allCompletedPaths.length > 1) {
-                    log(`Discarding ${allCompletedPaths.length - 1} shorter match(es)`, 'warning');
                 }
             }
         } else {
-            // No active states, or can't progress further, or no pattern match - keep all completed paths
+            // No active states, or can't progress further, or no pattern match
+            // Finalize: add greedy fallback if exists, then all current completed paths
+            if (ctx._greedyFallback) {
+                ctx.addCompletedPath(ctx._greedyFallback);
+                ctx._greedyFallback = null;
+            }
             for (const state of completedStates.values()) {
                 for (const path of state.matchedPaths) {
                     ctx.addCompletedPath(path);
@@ -411,13 +482,13 @@ class NFAExecutor {
                 const hash = newState.hash();
                 if (newState.elementIndex === -1) {
                     if (completedStates.has(hash)) {
-                        completedStates.get(hash).mergePaths(newState);
+                        completedStates.get(hash).mergeSummaries(newState);
                     } else {
                         completedStates.set(hash, newState);
                     }
                 } else {
                     if (activeStates.has(hash)) {
-                        activeStates.get(hash).mergePaths(newState);
+                        activeStates.get(hash).mergeSummaries(newState);
                     } else {
                         activeStates.set(hash, newState);
                     }
@@ -437,7 +508,7 @@ class NFAExecutor {
 
         const elem = this.pattern.elements[state.elementIndex];
         if (!elem) {
-            results.push(new MatchState(-1, state.counts, state.matchedPaths));
+            results.push(new MatchState(-1, state.counts, state.summaries));
             return results;
         }
 
@@ -450,7 +521,7 @@ class NFAExecutor {
             // But if we're at #END, it means we need to process it
             this.transitionGroupEnd(state, elem, log, results);
         } else if (elem.isFinish()) {
-            results.push(new MatchState(-1, state.counts, state.matchedPaths));
+            results.push(new MatchState(-1, state.counts, state.summaries));
         }
 
         return results;
@@ -595,7 +666,7 @@ class NFAExecutor {
             const hash = state.hash();
 
             if (seen.has(hash)) {
-                seen.get(hash).mergePaths(state);
+                seen.get(hash).mergeSummaries(state);
                 continue;
             }
             seen.set(hash, state);
@@ -687,7 +758,7 @@ class NFAExecutor {
         for (const state of states) {
             const hash = state.hash();
             if (merged.has(hash)) {
-                merged.get(hash).mergePaths(state);
+                merged.get(hash).mergeSummaries(state);
             } else {
                 merged.set(hash, state);
             }
@@ -858,6 +929,7 @@ class NFAExecutor {
 // ============== Exports ==============
 
 if (typeof window !== 'undefined') {
+    window.Summary = Summary;
     window.MatchState = MatchState;
     window.MatchContext = MatchContext;
     window.NFAExecutor = NFAExecutor;
@@ -869,6 +941,7 @@ if (typeof module !== 'undefined' && module.exports) {
         PatternElement: parser.PatternElement,
         Pattern: parser.Pattern,
         parsePattern: parser.parsePattern,
+        Summary,
         MatchState,
         MatchContext,
         NFAExecutor
